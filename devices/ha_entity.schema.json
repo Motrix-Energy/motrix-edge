@@ -1,0 +1,74 @@
+{
+	"$schema": "https://json-schema.org/draft/2020-12/schema",
+	"$comment": "Options object for a Home Assistant entity. Its three keys (connector_options/listener_options/controller_options) are spread into HaEntity.__init__ by main.create_classes — keep in lockstep with the constructor; tests/test_config.py enforces this.",
+	"type": "object",
+	"properties": {
+		"connector_options": {
+			"type": "object",
+			"properties": {
+				"name": {
+					"type": "string",
+					"$comment": "Must reference an existing connector name — enforced by Config at load time, not by the schema"
+				}
+			},
+			"required": ["name"]
+		},
+		"listener_options": {
+			"type": "object",
+			"properties": {
+				"entity_id": {
+					"$comment": "The Home Assistant entity this device mirrors, e.g. 'sensor.grid_import_energy'. A list watches several entities with one device — the last state to arrive wins, so a list is for entities that mean the same thing, not for aggregation.",
+					"oneOf": [
+						{ "type": "string" },
+						{ "type": "array", "items": { "type": "string" } }
+					]
+				},
+				"metric_attributes": {
+					"$comment": "Allowlist of entity attributes to report as metrics. Omit to report every scalar attribute that is not presentation noise (friendly_name, icon, device_class, ...).",
+					"type": "array",
+					"items": { "type": "string" }
+				},
+				"energy_attribute": {
+					"$comment": "Which attribute get_total_energy_kwh() reads. Omit it and set energy_unit instead to use the entity's own state — which is the usual shape, since an HA energy sensor's state IS the cumulative reading.",
+					"type": ["string", "null"]
+				},
+				"energy_unit": {
+					"$comment": "Wh | kWh | MWh. Declaring it is what makes this entity an energy meter: with neither this nor energy_attribute set, get_total_energy_kwh() reports 0.0 so a thermostat stays harmless in an algorithm that sums every EnergyMeter. Falls back to the entity's own attributes.unit_of_measurement.",
+					"type": ["string", "null"]
+				}
+			},
+			"additionalProperties": false
+		},
+		"controller_options": {
+			"$comment": "Meaningful only on the ha_switch kind — a plain ha_entity is not writable, so Device.control refuses commands before they reach the connector.",
+			"type": "object",
+			"properties": {
+				"entity_id": {
+					"$comment": "The entity a command targets. Often the same as listener_options.entity_id, but not always: an algorithm may read a power sensor and actuate the switch beside it.",
+					"type": ["string", "null"]
+				},
+				"domain": {
+					"$comment": "Default service domain for commands that name none. Omit it and the domain-agnostic 'homeassistant' services are used, which cover lights, switches, fans, scripts, media players and climate alike.",
+					"type": ["string", "null"]
+				},
+				"commands": {
+					"$comment": "Command token -> a full service call. A full call rather than {service_on, service_off} because that shape only ever expresses a Switch and dead-ends the moment an algorithm wants climate.set_temperature. 'on'/'off' need no entry: they fall back to homeassistant.turn_on/turn_off. Any OTHER token with no entry is refused with a warning — a service name is never guessed.",
+					"type": "object",
+					"additionalProperties": {
+						"type": "object",
+						"properties": {
+							"domain": { "type": "string" },
+							"service": { "type": "string" },
+							"service_data": { "type": "object" },
+							"target": { "type": "object" }
+						},
+						"required": ["service"],
+						"additionalProperties": false
+					}
+				}
+			},
+			"additionalProperties": false
+		}
+	},
+	"additionalProperties": false
+}

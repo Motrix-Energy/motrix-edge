@@ -1,0 +1,26 @@
+-r requirements.txt
+
+# The point-to-point / directly-attached LoRa radio connector (connectors/lora.py).
+# Deliberately NOT in requirements.txt: a site whose LoRa traffic arrives through a network
+# server — which is most of them, and is connectors/lorawan.py — has no serial port to open
+# and should not install a UART stack for a radio it does not have.
+#
+# connectors/lora.py imports serial at MODULE TOP so main.create_classes catches the
+# ModuleNotFoundError and logs one clean per-entry skip — the EMS runs, minus this connector.
+# Do not move that import into start(): the same error inside a supervised worker is a crash
+# (five restarts, backoff, then CRITICAL), and once the restart budget is spent the worker
+# counts as finished, which makes main shut the whole run down over a dependency that was
+# optional by design. Same rule and same reason as requirements-modbus.txt.
+#
+# devices/lora.py deliberately imports NOTHING from pyserial — it decodes an application
+# payload with base64 and struct from the stdlib. That is what lets a LoRa node be replayed
+# from a CSV (`emulates: "lora"` or `emulates: "lorawan"`) on a machine with no radio at all,
+# and what keeps tests/test_lora_device.py running in a core-only checkout.
+#
+# The name is worth stating once: the distribution is `pyserial`, the import is
+# `import serial`, and `serial` on PyPI is a DIFFERENT and unrelated package. Installing the
+# wrong one gives a module that imports and then fails at the first Serial() call.
+#
+# Note that connectors/lorawan.py — the network-server half of LoRa, and the one most
+# deployments want — needs none of this: it is MQTT, and paho is already core.
+pyserial==3.5

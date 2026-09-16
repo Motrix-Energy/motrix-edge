@@ -1,0 +1,22 @@
+-r requirements.txt
+
+# The Modbus TCP connector (connectors/modbus_tcp.py). Deliberately NOT in
+# requirements.txt: an MQTT-only or CSV-only EMS should not install a protocol stack for
+# hardware it does not have.
+#
+# connectors/modbus_tcp.py imports pymodbus at MODULE TOP so that main.create_classes
+# catches the ModuleNotFoundError and logs one clean per-entry skip — the EMS runs, minus
+# the Modbus connector. Do not move that import into start(): the same error inside a
+# supervised worker is a crash (five restarts, backoff, then CRITICAL), and once the
+# restart budget is spent the worker counts as finished — which makes main shut the whole
+# run down, over a dependency that was optional by design.
+#
+# devices/modbus_meter.py deliberately imports NOTHING from pymodbus: it decodes raw
+# register words with `struct` from the stdlib. That is what lets a Modbus meter be
+# replayed from a CSV (`emulates: "modbus_tcp"`) on a machine with no Modbus stack at all,
+# and what keeps tests/test_modbus_meter.py running in a core-only checkout.
+#
+# Pinned exactly, not to a range: pymodbus moved a great deal within the 3.x line — the
+# client class path, the sync/async split, and the `slave=`/`unit=` keyword which is
+# `device_id=` from 3.9 onward. The connector calls it as `device_id=`.
+pymodbus==3.15.0

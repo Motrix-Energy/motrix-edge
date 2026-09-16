@@ -1,0 +1,45 @@
+{
+	"$schema": "https://json-schema.org/draft/2020-12/schema",
+	"$comment": "Options for the home_assistant connector. Keys map 1:1 to HomeAssistantConnector.__init__ kwargs (spread by main.create_classes) — keep in lockstep with the constructor; tests/test_config.py enforces this. Every scalar also accepts \"string\" and \"null\": interpolation runs AFTER validation, so a \"${HA_PORT}\" declared `integer` would fail here as a string. The constructor coerces each one through api/options.py.",
+	"type": "object",
+	"properties": {
+		"url": {
+			"$comment": "The full WebSocket endpoint — ws:// or wss://, NOT the http:// address of the UI: ws://homeassistant.local:8123/api/websocket. Set this behind a reverse proxy or on a non-default path; otherwise use host/port/ssl and let the connector build it.",
+			"type": ["string", "null"]
+		},
+		"host": {
+			"type": ["string", "null"]
+		},
+		"port": {
+			"type": ["integer", "string", "null"]
+		},
+		"ssl": {
+			"$comment": "Picks wss:// over ws:// when the URL is built from host/port. Ignored when `url` is given.",
+			"type": ["boolean", "string", "null"]
+		},
+		"access_token": {
+			"$comment": "A Long-Lived Access Token (Home Assistant -> your profile -> Security). It does not expire and it carries the FULL permissions of the user that created it — Home Assistant has no scoped tokens — so create a dedicated non-admin user for the EMS rather than minting one from your own admin account. Write it as ${HA_TOKEN} and keep it out of config.json.",
+			"type": ["string", "null"]
+		},
+		"verify_ssl": {
+			"$comment": "false disables BOTH certificate and hostname verification: the connection is then encrypted but not authenticated, so anything on the path can impersonate Home Assistant. Self-signed certificate on a trusted LAN only.",
+			"type": ["boolean", "string", "null"]
+		},
+		"receive_timeout": {
+			"$comment": "Socket timeout in seconds. Not an error budget: a quiet house is silent for minutes, so this is what lets the receive loop re-check the stop event and drives the ping cadence that tells a quiet socket from a dead one.",
+			"type": ["number", "string", "null"]
+		},
+		"max_missed_pongs": {
+			"$comment": "Consecutive unanswered pings before the session is treated as dead and reconnected. max_missed_pongs x receive_timeout is how long a half-open connection can look healthy.",
+			"type": ["integer", "string", "null"]
+		},
+		"reconnect_backoff_seconds": {
+			"$comment": "First delay of the reconnect ladder, doubling to max_reconnect_backoff_seconds. Reconnection lives in the connector rather than the supervisor: five restarts is about 31s of tolerance and a Home Assistant box reboots in about two minutes, after which the worker would be finished — which shuts the whole EMS down.",
+			"type": ["number", "string", "null"]
+		},
+		"max_reconnect_backoff_seconds": {
+			"type": ["number", "string", "null"]
+		}
+	},
+	"additionalProperties": false
+}

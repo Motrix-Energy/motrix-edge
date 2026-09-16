@@ -1,0 +1,43 @@
+{
+	"$schema": "https://json-schema.org/draft/2020-12/schema",
+	"$comment": "Options for the mqtt connector. Keys map 1:1 to MQTTConnector.__init__ kwargs (spread by main.create_classes) — keep in lockstep with the constructor; tests/test_config.py enforces this. Scalars also accept \"string\" and \"null\": interpolation runs AFTER validation, so a \"${MQTT_PORT}\" arrives at the constructor as a str. It coerces each one through api/options.py.",
+	"type": "object",
+	"properties": {
+		"host": {
+			"type": "string"
+		},
+		"port": {
+			"$comment": "1883 plain, 8883 TLS. Coerced, because paho compares it against an int inside connect() — an unresolved ${VAR} used to be a TypeError on the supervised worker thread rather than a config warning.",
+			"type": ["integer", "string", "null"]
+		},
+		"version": {
+			"$comment": "Accepts null so an unresolved \"${MQTT_VERSION}\" warns and falls back to 3.1.1. MQTTVersion is a StrEnum, so it would otherwise raise ValueError — which create_classes does not catch, taking the whole process down.",
+			"type": ["string", "null"],
+			"enum": ["3.1.0", "3.1.1", "5.0.0", null]
+		},
+		"client_id": {
+			"type": "string"
+		},
+		"username": {
+			"type": "string"
+		},
+		"password": {
+			"type": "string"
+		},
+		"tls": {
+			"$comment": "Coerced, and this one used to fail silently rather than loudly: tls is only read for truthiness, and the string \"false\" is truthy — so an operator disabling TLS through an environment variable got TLS anyway.",
+			"type": ["boolean", "string", "null"]
+		},
+		"ca_certs": {
+			"type": "string"
+		},
+		"certfile": {
+			"type": "string"
+		},
+		"keyfile": {
+			"type": "string"
+		}
+	},
+	"required": ["host", "port", "version"],
+	"additionalProperties": false
+}

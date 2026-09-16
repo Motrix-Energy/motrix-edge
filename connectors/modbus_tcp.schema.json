@@ -1,0 +1,44 @@
+{
+	"$schema": "https://json-schema.org/draft/2020-12/schema",
+	"$comment": "Options for the modbus_tcp connector. Keys map 1:1 to ModbusTcpConnector.__init__ kwargs (spread by main.create_classes) — keep in lockstep with the constructor; tests/test_config.py enforces this. Every scalar also accepts \"string\" and \"null\": interpolation runs AFTER validation, so a \"${MODBUS_PORT}\" declared `number` would fail here as a string. The constructor coerces each one through api/options.py.",
+	"type": "object",
+	"properties": {
+		"host": {
+			"$comment": "The meter, or the TCP gateway fronting several RS-485 slaves. Inside a container this must be an address the container can reach — a meter on the host's LAN is not on the compose network.",
+			"type": ["string", "null"]
+		},
+		"port": {
+			"$comment": "502 is the registered Modbus port; some devices use 5020.",
+			"type": ["integer", "string", "null"]
+		},
+		"device_id": {
+			"$comment": "Default Modbus unit id. 0 is broadcast, 1-247 are RS-485 slave addresses, and 255 is the Modbus-TCP 'unit id not used' convention. One gateway fronting several slaves addresses each by a different id — override those per device in listener_options.device_id rather than here.",
+			"type": ["integer", "string", "null"]
+		},
+		"timeout": {
+			"$comment": "Seconds per transaction. With `retries`, this bounds the worst-case in-flight transaction against main's shutdown grace (runtime.shutdown_timeout_seconds, default 10s) — the connector does not override stop(), so a transaction in flight when a shutdown arrives is what decides how long the thread takes to return.",
+			"type": ["number", "string", "null"]
+		},
+		"retries": {
+			"$comment": "Attempts per transaction. Defaults to 1, not pymodbus's 3: for a poller the next poll IS the retry, and 3 x timeout is 9s against a 10s shutdown grace.",
+			"type": ["integer", "string", "null"]
+		},
+		"default_interval": {
+			"$comment": "Poll period in seconds for devices that declare no listener_options.interval.",
+			"type": ["number", "string", "null"]
+		},
+		"reconnect_backoff_seconds": {
+			"$comment": "First delay of the reconnect ladder, doubling to max_reconnect_backoff_seconds. A dropped meter is reconnected here rather than by raising: the supervisor's restart budget is for programming faults, and spending it on a nightly gateway drop ends the whole run once the cap is reached.",
+			"type": ["number", "string", "null"]
+		},
+		"max_reconnect_backoff_seconds": {
+			"type": ["number", "string", "null"]
+		},
+		"close_on_error": {
+			"$comment": "Drop the socket after a transport error so the next pass reconnects. True suits a gateway that answers one transaction per connection; set false for a meter that is merely slow.",
+			"type": ["boolean", "string", "null"]
+		}
+	},
+	"required": ["host"],
+	"additionalProperties": false
+}

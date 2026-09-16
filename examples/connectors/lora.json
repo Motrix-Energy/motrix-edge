@@ -1,0 +1,92 @@
+{
+	"$schema": "../../config.schema.json",
+	"$comment": "A LoRa radio wired straight to this host over a serial port — the point-to-point half of LoRa, for a link with no network server at all. If your traffic arrives through ChirpStack or The Things Stack, use examples/connectors/lorawan.json instead: it needs no radio on this machine and no extra dependency. The module families here share no command syntax, so a dialect is a receive regex plus a send template rather than a driver; `dialect: \"custom\"` with your own regex is what makes a module nobody here has heard of work. Needs `pip install -r requirements-lora.txt`.",
+	"version": "0.0.0",
+	"env": "prod",
+	"logger_level": "info",
+
+	"connectors": [
+		{
+			"name": "radio",
+			"protocol": "lora",
+			"options": {
+				"port": "${LORA_SERIAL_PORT:-/dev/ttyUSB0}",
+				"baudrate": "${LORA_BAUDRATE:-115200}",
+				"dialect": "rak",
+				"init_commands": [
+					"AT+NWM=1",
+					"AT+BAND=4",
+					"AT+DEVEUI=${LORA_DEVEUI:-}",
+					"AT+APPEUI=${LORA_APPEUI:-}",
+					"AT+APPKEY=${LORA_APPKEY:-}",
+					"AT+JOIN=1:0:10:8"
+				],
+				"encoding": "hex",
+				"read_timeout": 1,
+				"reconnect_backoff_seconds": 5
+			}
+		}
+	],
+
+	"devices": [
+		{
+			"$comment": "Routed by fPort, because every frame from the radio arrives on one stream and there is no topic to route by. A device may also select on `address` — matched against the dialect's (?P<address>...) group, or against the leading payload bytes when the dialect exposes none, since a raw point-to-point link has no MAC addressing and who sent a frame can only be inside the frame.",
+			"name": "remote_meter",
+			"kind": "lora",
+			"options": {
+				"connector_options": { "name": "radio" },
+				"listener_options": {
+					"profile": "native",
+					"f_port": 2,
+					"byte_order": "big",
+					"fields": [
+						{ "name": "energy_import_kwh", "offset": 0, "data_type": "UINT32", "scale": 0.01, "unit": "kWh", "role": "energy_import_kwh" },
+						{ "name": "power_import_kw", "offset": 4, "data_type": "UINT16", "scale": 0.001, "unit": "kW" },
+						{ "name": "relay_closed", "offset": 6, "data_type": "UINT8", "bit": 0 }
+					]
+				},
+				"controller_options": {}
+			}
+		},
+		{
+			"name": "remote_relay",
+			"kind": "lora_switch",
+			"options": {
+				"connector_options": { "name": "radio" },
+				"listener_options": {
+					"profile": "native",
+					"f_port": 3,
+					"fields": [
+						{ "name": "relay_on", "offset": 0, "data_type": "UINT8", "bit": 0 }
+					]
+				},
+				"controller_options": {
+					"f_port": 3,
+					"on_payload": "01",
+					"off_payload": "00",
+					"payload_encoding": "hex"
+				}
+			}
+		}
+	],
+
+	"algorithms": [
+		{
+			"name": "Auto Toggle",
+			"class": "auto_toggle",
+			"options": {
+				"required_devices": ["remote_meter", "remote_relay"],
+				"delay_seconds": 60,
+				"wait_for_devices_timeout": 120
+			}
+		}
+	],
+
+	"storage": [
+		{
+			"name": "local_csv",
+			"class": "csv_file",
+			"options": { "output_dir": "${EMS_STORAGE_DIR:-data/storage}" }
+		}
+	]
+}

@@ -1,0 +1,42 @@
+{
+	"$schema": "https://json-schema.org/draft/2020-12/schema",
+	"$comment": "Options for the http_api connector. Keys map 1:1 to HttpApiConnector.__init__ kwargs (spread by main.create_classes) — keep in lockstep with the constructor; tests/test_config.py enforces this.",
+	"type": "object",
+	"properties": {
+		"base_url": {
+			"type": "string"
+		},
+		"headers": {
+			"type": "object",
+			"additionalProperties": {
+				"type": "string"
+			}
+		},
+		"auth": {
+			"type": "object",
+			"properties": {
+				"username": {
+					"type": "string"
+				},
+				"password": {
+					"type": "string"
+				}
+			},
+			"required": ["username", "password"],
+			"additionalProperties": false
+		},
+		"default_interval": {
+			"type": "number",
+			"minimum": 1
+		},
+		"timeout": {
+			"type": "number",
+			"minimum": 1
+		},
+		"verify_ssl": {
+			"type": "boolean"
+		}
+	},
+	"required": ["base_url"],
+	"additionalProperties": false
+}

@@ -1,0 +1,32 @@
+# Lint only. `ruff format` is not part of this project's workflow — see requirements-dev.txt.
+line-length = 140
+indent-width = 4
+extend-exclude = [
+	".claude",         # tool scratch space, including stale worktree copies of this repo
+]
+
+[format]
+# Only consulted if someone runs `ruff format` explicitly; keeps it from converting the
+# source tree's tabs to spaces if they do.
+indent-style = "tab"
+
+[lint]
+# A deliberately small set: the rules that catch dead or wrong code, not style opinions.
+# E501 (line length) is off — the codebase favours one long explanatory line over a
+# wrapped one, and the docstrings here are load-bearing.
+select = ["F", "E4", "E7", "E9", "B", "UP"]
+ignore = [
+	"B008",  # function call in a default argument — not a pattern used here
+	"E741",  # ambiguous variable name
+	# The three pyupgrade rules that would rewrite `Optional[X]` to `X | None`. This
+	# codebase writes Optional deliberately and consistently — a linter that argues with
+	# the house style gets configured, not obeyed.
+	"UP007", "UP035", "UP045",
+]
+
+[lint.per-file-ignores]
+# conftest re-exports helpers that individual test modules import; some are unused there.
+"tests/conftest.py" = ["F401"]
+# generate.py inserts the repo root on sys.path before importing project modules, so its
+# imports genuinely cannot all sit at the top.
+"examples/generate.py" = ["E402"]

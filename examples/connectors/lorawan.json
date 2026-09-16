@@ -1,0 +1,131 @@
+{
+	"$schema": "../../config.schema.json",
+	"$comment": "LoRaWAN through a network server's MQTT integration. The EMS never touches a radio here — the network server has already abstracted every gateway and every end node — so what is left varying is the topic tree, the downlink body, the uplink envelope and the payload layout, and all four are configuration. Two nodes behind ChirpStack, plus a third behind AWS IoT Core expressed as `custom` to show that a network server with no named profile costs three lines and no code. Byte offsets and field names below are invented: replace them with your node's payload documentation. Needs no extra dependency — paho-mqtt is already core.",
+	"version": "0.0.0",
+	"env": "prod",
+	"logger_level": "info",
+
+	"connectors": [
+		{
+			"name": "lns",
+			"protocol": "lorawan",
+			"options": {
+				"profile": "chirpstack",
+				"host": "${LORAWAN_HOST:-192.168.1.70}",
+				"port": "${LORAWAN_PORT:-1883}",
+				"application_id": "${LORAWAN_APPLICATION_ID:-}",
+				"username": "${LORAWAN_USERNAME:-}",
+				"password": "${LORAWAN_PASSWORD:-}",
+				"min_downlink_interval": 300
+			}
+		},
+		{
+			"$comment": "The same connector against AWS IoT Core for LoRaWAN, whose topics are whatever IoT rule you wrote — which is exactly why it is not a named profile.",
+			"name": "aws",
+			"protocol": "lorawan",
+			"options": {
+				"profile": "custom",
+				"host": "${AWS_IOT_HOST:-}",
+				"port": 8883,
+				"tls": true,
+				"certfile": "${AWS_IOT_CERTFILE:-}",
+				"keyfile": "${AWS_IOT_KEYFILE:-}",
+				"ca_certs": "${AWS_IOT_CA:-}",
+				"custom_uplink_topic": "lorawan/uplink/{dev_eui}",
+				"custom_downlink_topic": "lorawan/downlink/{dev_eui}",
+				"custom_downlink_body": { "PayloadData": "{payload_b64}", "WirelessMetadata": { "LoRaWAN": { "FPort": "{f_port}" } } },
+				"custom_topic_identifier": "dev_eui"
+			}
+		}
+	],
+
+	"devices": [
+		{
+			"$comment": "A submeter reporting a 32-bit kWh counter, instantaneous power, and packed status flags. `role` is what tells a generic node which field is its kWh total — guessing by field name would report 0.0 for the life of the deployment with nothing erroring. The battery_v field is gated to fPort 2: nodes multiplex payload layouts by port by design, and a field gated this way is carried forward from the last uplink that did carry it rather than being erased.",
+			"name": "grid_meter",
+			"kind": "lora",
+			"options": {
+				"connector_options": { "name": "lns" },
+				"listener_options": {
+					"profile": "chirpstack",
+					"dev_eui": "${LORAWAN_METER_EUI:-70b3d57ed0001234}",
+					"byte_order": "big",
+					"fields": [
+						{ "name": "energy_import_kwh", "offset": 0, "data_type": "UINT32", "scale": 0.01, "unit": "kWh", "role": "energy_import_kwh" },
+						{ "name": "power_import_kw", "offset": 4, "data_type": "UINT16", "scale": 0.001, "unit": "kW" },
+						{ "name": "relay_closed", "offset": 6, "data_type": "UINT8", "bit": 0 },
+						{ "name": "tamper_alarm", "offset": 6, "data_type": "UINT8", "bit": 7 },
+						{ "name": "battery_v", "offset": 0, "data_type": "UINT16", "scale": 0.001, "unit": "V", "f_port": 2 }
+					]
+				},
+				"controller_options": {}
+			}
+		},
+		{
+			"$comment": "A relay node. Class A means this downlink is QUEUED until the node's next uplink — see connectors/lorawan.py's class docstring before wiring an algorithm to it.",
+			"name": "water_heater",
+			"kind": "lora_switch",
+			"options": {
+				"connector_options": { "name": "lns" },
+				"listener_options": {
+					"profile": "chirpstack",
+					"dev_eui": "${LORAWAN_RELAY_EUI:-70b3d57ed0009999}",
+					"fields": [
+						{ "name": "relay_on", "offset": 0, "data_type": "UINT8", "bit": 0 },
+						{ "name": "rssi_reported", "offset": 1, "data_type": "INT8", "unit": "dBm" }
+					]
+				},
+				"controller_options": {
+					"f_port": 10,
+					"on_payload": "01",
+					"off_payload": "00",
+					"payload_encoding": "hex",
+					"confirmed": false,
+					"min_downlink_interval": 600
+				}
+			}
+		},
+		{
+			"$comment": "Behind AWS IoT Core: same device class, same field map, only the envelope paths differ. Three lines of config for a network server that has no named profile.",
+			"name": "remote_sensor",
+			"kind": "lora",
+			"options": {
+				"connector_options": { "name": "aws" },
+				"listener_options": {
+					"profile": "custom",
+					"dev_eui": "${AWS_SENSOR_EUI:-70b3d57ed000aaaa}",
+					"paths": {
+						"payload": "PayloadData",
+						"f_port": "WirelessMetadata.LoRaWAN.FPort",
+						"dev_eui": "WirelessMetadata.LoRaWAN.DevEui"
+					},
+					"fields": [
+						{ "name": "temperature_c", "offset": 0, "data_type": "INT16", "scale": 0.1, "unit": "degC" },
+						{ "name": "humidity_pct", "offset": 2, "data_type": "UINT8", "scale": 0.5, "unit": "%" }
+					]
+				},
+				"controller_options": {}
+			}
+		}
+	],
+
+	"algorithms": [
+		{
+			"name": "Auto Toggle",
+			"class": "auto_toggle",
+			"options": {
+				"required_devices": ["grid_meter", "water_heater"],
+				"delay_seconds": 300,
+				"wait_for_devices_timeout": 120
+			}
+		}
+	],
+
+	"storage": [
+		{
+			"name": "local_csv",
+			"class": "csv_file",
+			"options": { "output_dir": "${EMS_STORAGE_DIR:-data/storage}" }
+		}
+	]
+}

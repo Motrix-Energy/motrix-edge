@@ -1,0 +1,19 @@
+version: 2
+
+# The other half of SHA-pinning the workflow.
+#
+# A pin without a mover is a freeze, and a frozen action stays on whatever bug or advisory
+# its commit carried. This is what makes the pins safe: the versions still advance, but they
+# advance as a pull request a human reads, rather than because somebody else moved a tag
+# under us. Dependabot rewrites the SHA and the trailing `# v4` comment together, so the pin
+# stays readable after an update.
+updates:
+  - package-ecosystem: github-actions
+    directory: /
+    schedule:
+      interval: weekly
+    commit-message:
+      prefix: ci
+    groups:
+      actions:
+        patterns: ['*']

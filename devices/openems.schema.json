@@ -1,0 +1,67 @@
+{
+	"$schema": "https://json-schema.org/draft/2020-12/schema",
+	"$comment": "Options object for the openems device (one OpenEMS component's channels). Its three keys are spread into Openems.__init__ by main.create_classes — keep in lockstep with the constructor; tests/test_config.py enforces this. listener_options carries no 'endpoint'/'method'/'params'/'body': OpenemsConnector.resolve_endpoint() synthesizes the path from component+channels, and additionalProperties:false here is what stops a config smuggling a raw HttpApiConnector option past it.",
+	"type": "object",
+	"properties": {
+		"connector_options": {
+			"type": "object",
+			"properties": {
+				"name": {
+					"type": "string",
+					"$comment": "Must reference an existing connector name — enforced by Config at load time, not by the schema"
+				}
+			},
+			"required": ["name"]
+		},
+		"listener_options": {
+			"type": "object",
+			"properties": {
+				"component": {
+					"$comment": "OpenEMS component id: _sum, ess0, meter0, evcs0, ...",
+					"type": ["string", "null"]
+				},
+				"channels": {
+					"$comment": "A channel id, a REGEX, or a list of either — the Edge matches channelId with Pattern.matches, so a list is joined into one alternation and fetched in a single request. Omit to poll every channel of the component.",
+					"oneOf": [
+						{ "type": ["string", "null"] },
+						{ "type": "array", "items": { "type": "string" } }
+					]
+				},
+				"interval": {
+					"$comment": "Poll period in seconds; falls back to the connector's default_interval.",
+					"type": ["number", "string", "null"]
+				},
+				"energy_channel": {
+					"$comment": "Which channel get_total_energy_kwh() reports, by full address (e.g. '_sum/GridBuyActiveEnergy'). Named explicitly rather than guessed: an Edge exposes several plausible cumulative channels and they mean different things, so a heuristic would hand an algorithm a number that looks right and steers wrong. Omit it and the device reports 0.0, staying harmless in an algorithm that sums every EnergyMeter.",
+					"type": ["string", "null"]
+				},
+				"energy_unit": {
+					"$comment": "Wh (the default — what OpenEMS cumulative-energy channels use), kWh or MWh.",
+					"type": ["string", "null"]
+				}
+			},
+			"additionalProperties": false
+		},
+		"controller_options": {
+			"$comment": "Meaningful only on the openems_switch kind — a plain openems device is not writable, so Device.control refuses commands before they reach the connector.",
+			"type": "object",
+			"properties": {
+				"component": {
+					"type": ["string", "null"]
+				},
+				"channel": {
+					"$comment": "A single writable channel id — not a regex. POST /rest/channel/{component}/{channel}.",
+					"type": ["string", "null"]
+				},
+				"on_value": {
+					"$comment": "The JSON value written for the Switch COMMAND_ON token; true by default. Set it to a number for a setpoint channel — on_value: -3000 on ess0/SetActivePowerEquals charges the battery at 3 kW when an algorithm says 'on'."
+				},
+				"off_value": {
+					"$comment": "The JSON value written for COMMAND_OFF; false by default."
+				}
+			},
+			"additionalProperties": false
+		}
+	},
+	"additionalProperties": false
+}

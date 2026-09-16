@@ -1,0 +1,73 @@
+{
+	"$schema": "../../config.schema.json",
+	"version": "1.0.0",
+	"env": "dev",
+	"logger_level": "info",
+
+	"$comment": "The golden-fixture configuration. Replays three device kinds through the pseudo connector into the AutoToggle algorithm and a CSV storage backend — no hardware, no broker, no network. The three ${VAR:-default} paths are what let examples/generate.py point one config at two different replay files and an isolated output directory; run it plainly and the defaults write to data/storage, so the quickstart cannot dirty the committed fixture.",
+
+	"connectors": [
+		{
+			"name": "replay",
+			"protocol": "pseudo",
+			"options": {
+				"replay_file": "${EMS_REPLAY_FILE:-examples/auto_toggle/replay.naive.csv}",
+				"control_log": "${EMS_CONTROL_LOG:-data/storage/control.log}",
+				"speed": 0,
+				"step_timeout_seconds": 30,
+				"emulates": "mqtt"
+			}
+		}
+	],
+
+	"devices": [
+		{
+			"name": "p1_meter",
+			"kind": "p1",
+			"options": {
+				"connector_options": { "name": "replay" },
+				"listener_options": { "pattern": "p1/data", "subscription": "p1/data" },
+				"controller_options": {}
+			}
+		},
+		{
+			"name": "shelly_plug",
+			"kind": "shelly_plug",
+			"options": {
+				"connector_options": { "name": "replay" },
+				"listener_options": { "pattern": "shellies/.*", "subscription": "shellies/plug-s/#" },
+				"controller_options": { "topic": "shellies/plug-s/relay/0/command" }
+			}
+		},
+		{
+			"name": "pseudo_sensor",
+			"kind": "pseudo",
+			"options": {
+				"connector_options": { "name": "replay" },
+				"listener_options": {},
+				"controller_options": {}
+			}
+		}
+	],
+
+	"algorithms": [
+		{
+			"name": "AutoToggle",
+			"class": "auto_toggle",
+			"options": {
+				"delay_seconds": 900,
+				"required_devices": ["p1_meter", "shelly_plug"]
+			}
+		}
+	],
+
+	"storage": [
+		{
+			"name": "csv",
+			"class": "csv_file",
+			"options": {
+				"output_dir": "${EMS_STORAGE_DIR:-data/storage}"
+			}
+		}
+	]
+}

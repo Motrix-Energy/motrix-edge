@@ -1,0 +1,22 @@
+# Source is LF everywhere, regardless of the contributor's core.autocrlf.
+* text=auto eol=lf
+
+# examples/ is bytes, not text — and that is the entire point of it.
+#
+# CsvFileBackend writes CRLF line terminators on every platform (newline="" hands the
+# terminator to the csv module, so it is not os.linesep), a quoted field can contain a raw
+# CRLF, the P1 telegrams in the replay files are CRLF-delimited, and
+# tests/test_storage_contract.py compares these files byte-for-byte against a fresh run
+# while examples/MANIFEST.json publishes a SHA-256 of each. Let git normalise them and the
+# suite passes on Windows and fails on Linux CI, having "corrected" the one property the
+# fixture exists to pin — and Motrix Edge View, which vendors these same bytes, breaks
+# with it.
+examples/** -text
+
+# The pseudo connector's control log is written in text mode without newline="", so its
+# terminator really is platform-dependent. Store what was produced.
+examples/auto_toggle/expected/control.log -text
+
+# Brand assets are bytes. The PNG is binary either way; naming it here keeps the rule
+# visible next to the fixtures one rather than relying on git's content sniffing.
+docs/assets/*.png -text

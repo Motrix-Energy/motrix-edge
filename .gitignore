@@ -1,0 +1,27 @@
+.idea/
+__pycache__/
+
+# Anchored. The operator's real configuration is the one at the repo root; unanchored,
+# this also swallowed examples/auto_toggle/config.json — the tracked golden fixture.
+/config.json
+# Anchored and directory-only. A bare `data` also matches a *file* named data and any
+# nested data/ directory (tests/data/, docker/data/). Public example data lives in
+# examples/, which is tracked — see examples/README.md.
+/data/
+
+# .env.example is tracked; the real .env holds the MQTT and InfluxDB credentials
+.env
+.gstack/
+
+# Machine-specific tooling permissions — regenerated per machine, meaningless to anyone
+# else. The Motrix Edge View repo ignores exactly this file for the same reason, while
+# tracking .claude/launch.json beside it because that one is how a contributor starts the
+# dev server.
+.claude/settings.local.json
+
+# Defence in depth. virtualenv, pytest and ruff each write a self-ignoring `*` into the
+# directory they create, so these three lines change nothing today — they matter only if
+# something ever produces one of these without that file.
+.venv/
+.pytest_cache/
+.ruff_cache/

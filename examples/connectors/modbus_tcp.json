@@ -1,0 +1,83 @@
+{
+	"$schema": "../../config.schema.json",
+	"$comment": "A Modbus TCP meter and a relay behind one gateway. The register map lives here rather than in code, which is what lets one device class cover many meter models — Modbus standardises the framing and standardises nothing about what lives at which address. Addresses below are ZERO-BASED protocol addresses, not 4xxxx data-model numbers, and they are invented: replace them with your meter's. Needs `pip install -r requirements-modbus.txt`.",
+	"version": "0.0.0",
+	"env": "prod",
+	"logger_level": "info",
+
+	"connectors": [
+		{
+			"name": "gateway",
+			"protocol": "modbus_tcp",
+			"options": {
+				"host": "${MODBUS_HOST:-192.168.1.60}",
+				"port": "${MODBUS_PORT:-502}",
+				"device_id": "${MODBUS_UNIT_ID:-1}",
+				"default_interval": 10
+			}
+		}
+	],
+
+	"devices": [
+		{
+			"name": "grid_meter",
+			"kind": "modbus_meter",
+			"options": {
+				"connector_options": { "name": "gateway" },
+				"listener_options": {
+					"interval": 10,
+					"device_id": 1,
+					"word_order": "big",
+					"registers": [
+						{ "name": "energy_import_t1_kwh", "address": 0, "type": "holding", "data_type": "UINT32", "scale": 0.01, "unit": "kWh", "role": "energy_import_kwh" },
+						{ "name": "energy_import_t2_kwh", "address": 2, "type": "holding", "data_type": "UINT32", "scale": 0.01, "unit": "kWh", "role": "energy_import_kwh" },
+						{ "name": "power_import_w", "address": 12, "type": "holding", "data_type": "INT32", "unit": "W" },
+						{ "name": "voltage_l1_v", "address": 20, "type": "input", "data_type": "UINT16", "scale": 0.1, "unit": "V" },
+						{ "name": "current_l1_a", "address": 21, "type": "input", "data_type": "UINT16", "scale": 0.01, "unit": "A" },
+						{ "name": "serial", "address": 90, "type": "holding", "data_type": "STRING", "count": 8 }
+					]
+				},
+				"controller_options": {}
+			}
+		},
+		{
+			"name": "boiler_relay",
+			"kind": "modbus_switch",
+			"options": {
+				"connector_options": { "name": "gateway" },
+				"listener_options": {
+					"interval": 5,
+					"device_id": 2,
+					"registers": [
+						{ "name": "relay", "address": 8, "type": "coil" }
+					]
+				},
+				"controller_options": {
+					"kind": "coil",
+					"address": 8,
+					"device_id": 2
+				}
+			}
+		}
+	],
+
+	"algorithms": [
+		{
+			"name": "Auto Toggle",
+			"class": "auto_toggle",
+			"options": {
+				"required_devices": ["grid_meter", "boiler_relay"],
+				"delay_seconds": 30,
+				"wait_for_devices_timeout": 60
+			}
+		}
+	],
+
+	"storage": [
+		{
+			"name": "local_csv",
+			"class": "csv_file",
+			"options": { "output_dir": "${EMS_STORAGE_DIR:-data/storage}" }
+		}
+	]
+}

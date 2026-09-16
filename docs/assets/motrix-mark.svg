@@ -1,0 +1,13 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="6 24 108 80" width="216" height="160" role="img" aria-label="Motrix">
+  <title>Motrix</title>
+  <defs>
+    <linearGradient id="motrix-flow" x1="14" y1="0" x2="106" y2="0" gradientUnits="userSpaceOnUse">
+      <stop offset="0" stop-color="#2FE6C8"/>
+      <stop offset="1" stop-color="#FFB443"/>
+    </linearGradient>
+  </defs>
+  <path d="M22 73 L22 34 L60 70 L98 34 L98 73" fill="none" stroke="url(#motrix-flow)"
+        stroke-width="11" stroke-linecap="round" stroke-linejoin="round"/>
+  <circle cx="22" cy="88" r="8" fill="none" stroke="#2FE6C8" stroke-width="6.5"/>
+  <circle cx="98" cy="88" r="8" fill="none" stroke="#FFB443" stroke-width="6.5"/>
+</svg>

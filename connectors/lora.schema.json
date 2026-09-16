@@ -1,0 +1,59 @@
+{
+	"$schema": "https://json-schema.org/draft/2020-12/schema",
+	"$comment": "Options for the lora connector — a radio wired straight to this host over a serial port, which is the point-to-point half of LoRa. For LoRaWAN through a network server (ChirpStack, The Things Stack, …), which is what most sites have, use protocol \"lorawan\" instead: it needs no radio on this machine and no dependency outside the core. Needs pyserial — see requirements-lora.txt. Keys map 1:1 to LoRaConnector.__init__ kwargs (spread by main.create_classes) — keep in lockstep with the constructor; tests/test_config.py enforces this. Every scalar also accepts \"string\" and \"null\": interpolation runs AFTER validation, so a \"${LORA_BAUD}\" reaches the constructor as a str.",
+	"type": "object",
+	"properties": {
+		"port": {
+			"$comment": "The serial device: /dev/ttyUSB0, /dev/serial0 on a Raspberry Pi header, COM3 on Windows. Without it the connector logs one error and goes idle rather than looping.",
+			"type": ["string", "null"]
+		},
+		"baudrate": {
+			"$comment": "Defaults to 9600. Most STM32WL-based modules (RAK3172, LoRa-E5) ship at 115200; the RN2483 uses 57600.",
+			"type": ["integer", "string", "null"]
+		},
+		"dialect": {
+			"$comment": "Which module family's serial language to assume. The named ones are documented starting points transcribed from vendor AT manuals and they move between firmware revisions — 'custom' with your own receive_pattern and send_template is the actual compatibility guarantee, and is why this connector needs no code change for a module nobody here has heard of.",
+			"type": "string",
+			"enum": ["rak", "rn2483", "lora_e5", "custom"]
+		},
+		"receive_pattern": {
+			"$comment": "A regex matched against each line the module emits; overrides the dialect's. Named groups name what they capture: (?P<data>...) is required, and (?P<port>...), (?P<rssi>...), (?P<snr>...), (?P<address>...) are optional. A line that does not match is ignored rather than logged as an error — a module echoes commands, answers OK, and emits unsolicited status of its own, and only a match is a frame. Named-group regex rather than a bespoke format language because it is already the house idiom: see listener_options.pattern on the mqtt connector and parsers/obis.py.",
+			"type": ["string", "null"]
+		},
+		"send_template": {
+			"$comment": "A format string over {port} and {data}; overrides the dialect's. {data} is the payload in `encoding`. Omit {port} entirely for a raw point-to-point link that has no port concept.",
+			"type": ["string", "null"]
+		},
+		"init_commands": {
+			"$comment": "Lines written verbatim when the port opens, e.g. joining a network or setting a region. Empty by default and in every named dialect, on purpose: a join sequence depends on region, keys and device class, all of which are site-specific and none of which this repo can guess. See examples/connectors/lora.json for a worked one.",
+			"type": ["array", "null"],
+			"items": { "type": "string" }
+		},
+		"encoding": {
+			"$comment": "How the module spells a payload on the wire — hex for every dialect shipped here. Applies to both directions. Distinct from controller_options.payload_encoding on the device, which is how the operator wrote on_payload/off_payload in config.json.",
+			"type": "string",
+			"enum": ["hex", "base64"]
+		},
+		"read_timeout": {
+			"$comment": "Seconds a blocking readline() waits before returning empty. This is what bounds shutdown latency: stop() is cooperative and the loop can only notice it between reads, so this doubles as the stop budget. Deliberately not solved by closing the port from another thread — that is not documented as safe across pyserial's platform backends.",
+			"type": ["number", "string", "null"]
+		},
+		"write_timeout": {
+			"$comment": "Seconds a write may block before raising, so a wedged module cannot hold an algorithm's thread.",
+			"type": ["number", "string", "null"]
+		},
+		"reconnect_backoff_seconds": {
+			"$comment": "First delay after the port drops — an unplugged USB radio, a module reset. Doubles up to max_backoff_seconds. The connector never raises out of start(): burning the supervisor's restart budget makes the worker finished, and main waits on connectors, so the whole EMS would shut down over a radio unplugged for a minute.",
+			"type": ["number", "string", "null"]
+		},
+		"max_backoff_seconds": {
+			"$comment": "Ceiling for the doubling ladder.",
+			"type": ["number", "string", "null"]
+		},
+		"newline": {
+			"$comment": "Line terminator appended to every command written. AT dialects use CRLF, which is the default.",
+			"type": ["string", "null"]
+		}
+	},
+	"additionalProperties": false
+}

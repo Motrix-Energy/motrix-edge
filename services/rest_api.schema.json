@@ -1,0 +1,32 @@
+{
+	"$schema": "https://json-schema.org/draft/2020-12/schema",
+	"$comment": "Options for the rest_api service. Keys map 1:1 to RestApiService.__init__ kwargs (spread by main.create_classes) — keep in lockstep with the constructor; tests/test_config.py enforces this. 'devices_manager' and 'supervisor' are injected by main through create_classes(arguments=...) and are deliberately absent: declaring either here would let a config entry collide with the injected value and fail instantiation with 'got multiple values'. Every scalar also accepts 'string' and 'null': Config validates this schema BEFORE resolving ${VAR}, and an interpolated value is always a str, or null when a whole-value token resolves empty. 'required' is deliberately absent for the same reason — a '${MOTRIX_API_PORT}' template would satisfy it and still arrive as null. No 'minimum' either: it would constrain only the integer branch and silently pass '-1'; range checks live in api/options.py.",
+	"type": "object",
+	"properties": {
+		"host": {
+			"$comment": "Bind address, default 127.0.0.1. The API serves device data and site topology unauthenticated, so binding beyond loopback is opt-in and logs a warning. In a container set ${MOTRIX_API_HOST} to 0.0.0.0 — each container has its own loopback, so nginx cannot reach 127.0.0.1 inside the edge container; the port is still never published to the host.",
+			"type": ["string", "null"]
+		},
+		"port": {
+			"$comment": "Default 8000. 0 binds an ephemeral port, which is how the tests avoid collisions; read the real one back from RestApiService.bound_port.",
+			"type": ["integer", "string", "null"]
+		},
+		"root_path": {
+			"$comment": "ASGI root_path: the prefix a reverse proxy strips (e.g. \"/api\"), so /docs and /openapi.json emit correct URLs. It does not change the paths this app serves.",
+			"type": ["string", "null"]
+		},
+		"access_log": {
+			"$comment": "uvicorn's per-request access log. Off by default: a viewer polling once a second would turn the EMS log into an access log.",
+			"type": ["boolean", "string", "null"]
+		},
+		"docs": {
+			"$comment": "Serve /docs and /openapi.json. Turning it off is the one knob that shrinks the introspection surface without moving the port.",
+			"type": ["boolean", "string", "null"]
+		},
+		"shutdown_timeout_seconds": {
+			"$comment": "uvicorn's graceful-shutdown budget, deliberately below runtime.shutdown_timeout_seconds (default 10): uvicorn's own default is unbounded, and a keep-alive connection held open by the proxy would outlive the supervisor's grace period and be reported as a straggler.",
+			"type": ["integer", "string", "null"]
+		}
+	},
+	"additionalProperties": false
+}

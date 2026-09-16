@@ -1,0 +1,74 @@
+{
+	"$schema": "../../config.schema.json",
+	"$comment": "Reading an OpenEMS Edge over its REST channel API and steering one writable channel. Interop rather than competition: an Edge already drives inverters, batteries and EV chargers, and this exposes all of them as EMS devices without reimplementing a driver. Needs an Edge with io.openems.edge.controller.api.rest enabled — no extra Python dependency, `requests` is already core.",
+	"version": "0.0.0",
+	"env": "prod",
+	"logger_level": "info",
+
+	"connectors": [
+		{
+			"name": "edge",
+			"protocol": "openems",
+			"options": {
+				"host": "${OPENEMS_HOST:-192.168.1.50}",
+				"port": "${OPENEMS_PORT:-8084}",
+				"password": "${OPENEMS_PASSWORD:-user}",
+				"default_interval": 10
+			}
+		}
+	],
+
+	"devices": [
+		{
+			"name": "site_summary",
+			"kind": "openems",
+			"options": {
+				"connector_options": { "name": "edge" },
+				"listener_options": {
+					"component": "_sum",
+					"channels": ["EssSoc", "GridActivePower", "ProductionActivePower", "ConsumptionActivePower", "GridBuyActiveEnergy"],
+					"energy_channel": "_sum/GridBuyActiveEnergy",
+					"energy_unit": "Wh"
+				},
+				"controller_options": {}
+			}
+		},
+		{
+			"name": "battery",
+			"kind": "openems_switch",
+			"options": {
+				"connector_options": { "name": "edge" },
+				"listener_options": {
+					"component": "ess0",
+					"channels": ["Soc", "ActivePower", "Capacity"]
+				},
+				"controller_options": {
+					"component": "ess0",
+					"channel": "SetActivePowerEquals",
+					"on_value": -3000,
+					"off_value": 0
+				}
+			}
+		}
+	],
+
+	"algorithms": [
+		{
+			"name": "Auto Toggle",
+			"class": "auto_toggle",
+			"options": {
+				"required_devices": ["site_summary", "battery"],
+				"delay_seconds": 30,
+				"wait_for_devices_timeout": 60
+			}
+		}
+	],
+
+	"storage": [
+		{
+			"name": "local_csv",
+			"class": "csv_file",
+			"options": { "output_dir": "${EMS_STORAGE_DIR:-data/storage}" }
+		}
+	]
+}

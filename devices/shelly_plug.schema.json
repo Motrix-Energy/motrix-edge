@@ -1,0 +1,47 @@
+{
+	"$schema": "https://json-schema.org/draft/2020-12/schema",
+	"$comment": "Options object for the Shelly Plug S device (an MQTT switch). Its keys (connector_options/listener_options/controller_options) are spread into ShellyPlug.__init__ kwargs by main.create_classes — keep in lockstep with the constructor; tests/test_config.py enforces this.",
+	"type": "object",
+	"properties": {
+		"connector_options": {
+			"type": "object",
+			"properties": {
+				"name": {
+					"type": "string",
+					"$comment": "Must reference an existing connector name — enforced by Config at load time, not by the schema"
+				}
+			},
+			"required": ["name"]
+		},
+		"listener_options": {
+			"type": "object",
+			"properties": {
+				"pattern": {
+					"type": "string"
+				},
+				"subscription": {
+					"oneOf": [
+						{
+							"type": "string"
+						},
+						{
+							"type": "array",
+							"items": {
+								"type": "string"
+							}
+						}
+					]
+				}
+			}
+		},
+		"controller_options": {
+			"type": "object",
+			"properties": {
+				"topic": {
+					"type": "string"
+				}
+			}
+		}
+	},
+	"additionalProperties": false
+}

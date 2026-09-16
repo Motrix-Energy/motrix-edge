@@ -1,0 +1,27 @@
+.git
+.gitignore
+.idea
+.venv
+.claude
+.pytest_cache
+__pycache__
+data/
+config.json
+config.*.json
+# Prose. LICENSE and NOTICE are extensionless and so survive this rule, which is what
+# Apache-2.0 §4(d) needs: the image is a distribution, and the notice has to travel with
+# it. Do not widen this to something that would catch them.
+*.md
+tests/
+requirements-dev.txt
+# examples/ itself stays in the image (~200 KB), so that
+# `docker compose run --rm ems --config examples/auto_toggle/config.json` is a working
+# demo inside the container. Only the two parts that exist to serve the test suite are
+# dropped: the adversarial fixtures and the generator, which shells out to main.py.
+examples/edge_cases/
+examples/generate.py
+# COPY . . would otherwise bake the developer's real credentials into an image layer,
+# recoverable by anyone who can `docker save` or pull the image. .env is gitignored, but
+# gitignore has no bearing on the build context. Match it exactly — NOT ".env*", which
+# would also drop the tracked .env.example.
+.env

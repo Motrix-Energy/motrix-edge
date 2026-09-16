@@ -1,0 +1,61 @@
+{
+	"$schema": "https://json-schema.org/draft/2020-12/schema",
+	"$comment": "Options for the influxdb storage backend. Keys map 1:1 to InfluxDBBackend.__init__ kwargs (spread by main.create_classes) — keep in lockstep with the constructor; tests/test_config.py enforces this. Every scalar also accepts 'string' and 'null': Config validates this schema BEFORE resolving ${VAR}, and an interpolated value is always a str, or null when a whole-value token resolves empty. 'required' is deliberately absent for the same reason — a '${INFLUXDB_URL}' template would satisfy it and still arrive as null. No 'minimum' either: it would constrain only the integer branch and silently pass '-5'; range checks live in InfluxDBBackend._int_option. All *_ms options are milliseconds, matching influxdb_client.WriteOptions.",
+	"type": "object",
+	"properties": {
+		"url": {
+			"type": ["string", "null"]
+		},
+		"token": {
+			"type": ["string", "null"]
+		},
+		"org": {
+			"type": ["string", "null"]
+		},
+		"bucket": {
+			"type": ["string", "null"]
+		},
+		"measurement": {
+			"type": ["string", "null"]
+		},
+		"decisions_measurement": {
+			"type": ["string", "null"]
+		},
+		"tags": {
+			"$comment": "Static tags added to every point. Never derive these from device data — tag cardinality is what kills an InfluxDB instance.",
+			"type": ["object", "null"],
+			"additionalProperties": {
+				"type": ["string", "null"]
+			}
+		},
+		"field_separator": {
+			"type": ["string", "null"]
+		},
+		"parse_numeric_strings": {
+			"type": ["boolean", "string", "null"]
+		},
+		"batch_size": {
+			"type": ["integer", "string", "null"]
+		},
+		"flush_interval_ms": {
+			"type": ["integer", "string", "null"]
+		},
+		"retry_interval_ms": {
+			"type": ["integer", "string", "null"]
+		},
+		"max_retries": {
+			"type": ["integer", "string", "null"]
+		},
+		"max_close_wait_ms": {
+			"type": ["integer", "string", "null"]
+		},
+		"max_retry_time_ms": {
+			"$comment": "Total retry budget for one batch. Defaults to max_close_wait_ms; raising it above that lets the client's non-daemon retry threads outlive shutdown.",
+			"type": ["integer", "string", "null"]
+		},
+		"timeout_ms": {
+			"type": ["integer", "string", "null"]
+		}
+	},
+	"additionalProperties": false
+}

@@ -1,0 +1,11 @@
+{
+	"$schema": "https://json-schema.org/draft/2020-12/schema",
+	"$comment": "Options for the csv_file storage backend. Keys map 1:1 to CsvFileBackend.__init__ kwargs (spread by main.create_classes) — keep in lockstep with the constructor; tests/test_config.py enforces this.",
+	"type": "object",
+	"properties": {
+		"output_dir": {
+			"type": "string"
+		}
+	},
+	"additionalProperties": false
+}

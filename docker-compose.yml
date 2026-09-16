@@ -1,0 +1,236 @@
+services:
+  edge:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    container_name: motrix-edge
+    restart: unless-stopped
+    volumes:
+      - ./config.json:/app/config.json:ro
+      - ./data:/app/data
+    environment:
+      - MQTT_HOST=${MQTT_HOST:-}
+      - MQTT_PORT=${MQTT_PORT:-}
+      - MQTT_USERNAME=${MQTT_USERNAME:-}
+      - MQTT_PASSWORD=${MQTT_PASSWORD:-}
+      # The Phase 7 connectors. Passed through even though pymodbus and websocket-client
+      # are not in the default image: Config resolves ${VAR} from os.environ *inside* the
+      # container and compose forwards only what this list names, so a config.json saying
+      # "host": "${MODBUS_HOST}" resolves to nothing without the line below. No compose
+      # service backs any of them on purpose — a Modbus simulator needs a register map this
+      # repo does not own, and Home Assistant and OpenEMS Edge are stateful appliances that
+      # cannot come up unattended, so an entry for either would be broken by default.
+      - MODBUS_HOST=${MODBUS_HOST:-}
+      - MODBUS_PORT=${MODBUS_PORT:-}
+      - MODBUS_UNIT_ID=${MODBUS_UNIT_ID:-}
+      - HA_URL=${HA_URL:-}
+      - HA_TOKEN=${HA_TOKEN:-}
+      - HA_VERIFY_SSL=${HA_VERIFY_SSL:-}
+      - OPENEMS_HOST=${OPENEMS_HOST:-}
+      - OPENEMS_PORT=${OPENEMS_PORT:-}
+      - OPENEMS_PASSWORD=${OPENEMS_PASSWORD:-}
+      # LoRaWAN through a network server. No compose service either, and for a sharper
+      # reason than the ones above: a ChirpStack or Things Stack instance needs a registered
+      # gateway and per-device keys that only the site owns, so a container here would come
+      # up with an empty application and route nothing. Note the `lorawan` connector needs
+      # no extra at all — it is MQTT, and paho is core — so pointing it at the `mqtt`
+      # profile's mosquitto is a legitimate way to exercise it with mosquitto_pub.
+      - LORAWAN_HOST=${LORAWAN_HOST:-}
+      - LORAWAN_PORT=${LORAWAN_PORT:-}
+      - LORAWAN_APPLICATION_ID=${LORAWAN_APPLICATION_ID:-}
+      - LORAWAN_USERNAME=${LORAWAN_USERNAME:-}
+      - LORAWAN_PASSWORD=${LORAWAN_PASSWORD:-}
+      - LORAWAN_METER_EUI=${LORAWAN_METER_EUI:-}
+      - LORAWAN_RELAY_EUI=${LORAWAN_RELAY_EUI:-}
+      # The point-to-point `lora` connector is deliberately NOT plumbed here. It needs a
+      # real serial device passed into the container (`devices: [/dev/ttyUSB0]`), which is
+      # host-specific and cannot be defaulted, and pyserial is not in the image either.
+      # Run that one outside compose, or add the device mapping yourself.
+      - INFLUXDB_URL=${INFLUXDB_URL:-}
+      - INFLUXDB_TOKEN=${INFLUXDB_TOKEN:-}
+      - INFLUXDB_ORG=${INFLUXDB_ORG:-}
+      - INFLUXDB_BUCKET=${INFLUXDB_BUCKET:-}
+      # Referenced from config.json's services entry as ${MOTRIX_API_HOST} / ${MOTRIX_API_PORT}.
+      # 0.0.0.0, not 127.0.0.1: each container has its own loopback, so a loopback bind is
+      # unreachable from the viewer container. The port is still not published (below).
+      - MOTRIX_API_HOST=${MOTRIX_API_HOST:-0.0.0.0}
+      - MOTRIX_API_PORT=${MOTRIX_API_PORT:-8000}
+      # Read by the image's HEALTHCHECK, not by Config — it is never referenced from
+      # config.json. Set it empty to keep the PID-1 liveness probe when config.json
+      # declares no rest_api service.
+      - MOTRIX_HEALTHCHECK_URL=${MOTRIX_HEALTHCHECK_URL:-http://127.0.0.1:8000/health}
+    networks:
+      - motrix-net
+    # The API port is deliberately NOT published, and this is now load-bearing rather than
+    # tidy: the viewer's nginx holds the ONLY authentication in this system. It gates
+    # /api/* with Basic auth and proxies to edge:8000 across motrix-net, so the browser sees one
+    # origin — which is also why the API ships no CORS middleware and no auth of its own.
+    #
+    # Uncomment this and you have an unauthenticated copy of every route sitting beside the
+    # gated one. The 127.0.0.1 prefix is not optional either: a bare "8000:8000" binds
+    # 0.0.0.0 and puts live device data and site topology on the LAN. Re-comment it when
+    # you are done debugging.
+    # ports:
+    #   - "127.0.0.1:8000:8000"
+    #
+    # No healthcheck: block here on purpose — the image already carries one (Dockerfile),
+    # and two definitions of health is drift waiting to happen. mosquitto and influxdb
+    # need theirs below because those are third-party images with none built in.
+    depends_on:
+      mosquitto:
+        condition: service_healthy
+        required: false
+      influxdb:
+        condition: service_healthy
+        required: false
+
+  # the EMS's read-only API and anything that can reach this port.
+  viewer:
+    # A published image, not a build. The viewer is a sibling repository rather than a
+    # subdirectory: `build.context: ../motrix-edge-view` IS legal here and does work, but it makes
+    # this file assume a particular checkout layout on every machine that runs it, and
+    # breaks outright for anyone who cloned only Edge. The commented block is for
+    # developers who have both.
+    #
+    # VIEWER_IMAGE is a variable because this repository cannot verify the registry path on
+    # its own — check it against the viewer project's own releases before first use.
+    #
+    # As of 2026-08-14 the viewer has published no release, so this tag does not resolve and
+    # `docker compose --profile viewer up` cannot pull it. Until a `v*` tag is pushed there,
+    # the commented build block below is the working path for anyone holding both checkouts.
+    image: ${VIEWER_IMAGE:-ghcr.io/motrix-energy/motrix-edge-view}:${VIEWER_TAG:-0.1.0}
+    # build:
+    #   context: ../motrix-edge-view
+    #   dockerfile: docker/Dockerfile
+    container_name: motrix-viewer
+    restart: unless-stopped
+    # Opt-in, like mosquitto and the monitoring pair. Not decoration: this references an
+    # image tag that has to exist, and the profile is what lets the block live here without
+    # breaking a bare `docker compose up` for anyone who has not pulled it.
+    profiles:
+      - viewer
+    environment:
+      # nginx here is the only authentication in this system. It gates /api/* — everything
+      # the EMS's read-only API serves — and nothing else. The viewer's own HTML is public
+      # on purpose: it is the same file that project publishes as a release download, and
+      # it holds no data.
+      #
+      # admin/admin is a placeholder, not a credential — and it is a *compose-side* default,
+      # not an image one. The viewer image refuses to invent a credential: with VIEWER_AUTH
+      # unset-or-on and either variable empty it exits rather than starting ungated. What it
+      # warns about at every start is the transport — Basic auth over plain HTTP is base64,
+      # not encryption. Override both variables in .env before this leaves loopback.
+      - VIEWER_AUTH=${VIEWER_AUTH:-on}
+      - VIEWER_USER=${VIEWER_USER:-admin}
+      - VIEWER_PASSWORD=${VIEWER_PASSWORD:-admin}
+    # 127.0.0.1 by default, for exactly the reason the EMS's own port is not published at
+    # all: what this container proxies IS the live device data and site topology that
+    # keeping the API unpublished was protecting. It is now behind one shared password sent
+    # base64-encoded — reversibly — on every request over plain HTTP. Set VIEWER_BIND to
+    # 0.0.0.0 only deliberately, and put TLS in front when you do.
+    ports:
+      - "${VIEWER_BIND:-127.0.0.1}:${VIEWER_PORT:-8080}:8080"
+    networks:
+      - motrix-net
+    # NOT cosmetic. nginx.conf names `edge` literally in proxy_pass with no `resolver`, so it
+    # resolves the name once at configuration-parse time and exits with "host not found in
+    # upstream" if it does not resolve. Compose's embedded DNS answers for `edge` only once
+    # that container exists on the network.
+    #
+    # service_started, not service_healthy: what is needed is the DNS name, not a working
+    # EMS. The viewer must come up in file mode when the EMS is sick, and the EMS reports
+    # unhealthy for any config.json without a rest_api service.
+    #
+    # The cost of the literal upstream is that nginx caches the resolved IP for its
+    # lifetime: recreate the edge container and the viewer proxies a dead address until it is
+    # restarted too. The alternative — a resolver plus a variable in proxy_pass — buys
+    # re-resolution and loses the automatic /api prefix rewrite that the all-caps comment in
+    # nginx.conf exists to protect. Restarting the viewer is the cheaper trade.
+    depends_on:
+      edge:
+        condition: service_started
+
+  mosquitto:
+    image: eclipse-mosquitto:2
+    container_name: motrix-mosquitto
+    profiles:
+      - mqtt
+    ports:
+      - "1883:1883"
+      - "9001:9001"
+    volumes:
+      - ./docker/mosquitto/mosquitto.conf:/mosquitto/config/mosquitto.conf:ro
+      - mosquitto-data:/mosquitto/data
+      - mosquitto-log:/mosquitto/log
+    networks:
+      - motrix-net
+    healthcheck:
+      test: ["CMD-SHELL", "mosquitto_sub -t '$$SYS/broker/uptime' -C 1 -W 3"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+
+  influxdb:
+    image: influxdb:2.7-alpine
+    container_name: motrix-influxdb
+    profiles:
+      - monitoring
+    ports:
+      - "8086:8086"
+    volumes:
+      - influxdb-data:/var/lib/influxdb2
+      - influxdb-config:/etc/influxdb2
+    environment:
+      # One-shot: this only runs against an empty influxdb-data volume. Changing
+      # INFLUXDB_TOKEN in .env afterwards changes the client's token but not the
+      # server's — `docker compose down -v` to re-initialise.
+      - DOCKER_INFLUXDB_INIT_MODE=setup
+      - DOCKER_INFLUXDB_INIT_USERNAME=${INFLUXDB_INIT_USERNAME:-motrix}
+      - DOCKER_INFLUXDB_INIT_PASSWORD=${INFLUXDB_INIT_PASSWORD:-}
+      - DOCKER_INFLUXDB_INIT_ORG=${INFLUXDB_ORG:-motrix}
+      - DOCKER_INFLUXDB_INIT_BUCKET=${INFLUXDB_BUCKET:-motrix}
+      - DOCKER_INFLUXDB_INIT_ADMIN_TOKEN=${INFLUXDB_TOKEN:-}
+    networks:
+      - motrix-net
+    healthcheck:
+      test: ["CMD", "influx", "ping"]
+      interval: 30s
+      timeout: 5s
+      retries: 5
+      start_period: 10s
+
+  grafana:
+    image: grafana/grafana:latest
+    container_name: motrix-grafana
+    profiles:
+      - monitoring
+    ports:
+      - "3000:3000"
+    volumes:
+      - grafana-data:/var/lib/grafana
+      - ./docker/grafana/provisioning:/etc/grafana/provisioning:ro
+    environment:
+      - GF_SECURITY_ADMIN_PASSWORD=${GRAFANA_ADMIN_PASSWORD:-admin}
+      # Provisioning files expand ${VAR} from Grafana's own environment, not from the
+      # compose .env — without these the datasource provisions with an empty URL.
+      - INFLUXDB_URL=${INFLUXDB_URL:-http://influxdb:8086}
+      - INFLUXDB_TOKEN=${INFLUXDB_TOKEN:-}
+      - INFLUXDB_ORG=${INFLUXDB_ORG:-motrix}
+      - INFLUXDB_BUCKET=${INFLUXDB_BUCKET:-motrix}
+    networks:
+      - motrix-net
+    depends_on:
+      influxdb:
+        condition: service_healthy
+        required: false
+
+networks:
+  motrix-net:
+    driver: bridge
+
+volumes:
+  mosquitto-data:
+  mosquitto-log:
+  influxdb-data:
+  influxdb-config:
+  grafana-data:

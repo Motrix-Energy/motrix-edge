@@ -1,0 +1,11 @@
+timestamp,algorithm,device,command
+2024-02-01T08:00:00,AutoToggle,shelly_plug,on
+2024-02-01T08:00:05,AutoToggle,shelly_plug,"{""setpoint"": 21.5}"
+2024-02-01T08:00:10,AutoToggle,shelly_plug,"set 42, then wait"
+2024-02-01T08:00:15,AutoToggle,shelly_plug,"line one
+line two"
+2024-02-01T08:00:20,"Algo, with comma",shelly_plug,off
+2024-02-01T08:00:25,AutoToggle,"device ""quoted""",on
+,AutoToggle,shelly_plug,on
+2024-02-01T08:00:30,AutoToggle,,on
+2024-02-01T08:00:35,AutoToggle,shelly_plug,

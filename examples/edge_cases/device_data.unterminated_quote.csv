@@ -1,0 +1,3 @@
+timestamp,device_name,data_json
+2024-02-01T08:00:00,truncated_mid_field,"{""power"": 12.5
+2024-02-01T08:00:05,eaten_by_the_row_above,"{""power"": 13.0}"

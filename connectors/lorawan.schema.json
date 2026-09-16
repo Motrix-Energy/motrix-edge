@@ -1,0 +1,83 @@
+{
+	"$schema": "https://json-schema.org/draft/2020-12/schema",
+	"$comment": "Options for the lorawan connector, which subclasses MQTTConnector. Keys map 1:1 to LoRaWANConnector.__init__ kwargs (spread by main.create_classes) — and note that tests/test_config.py inspects THIS class's __init__, not the parent's, so every inherited MQTT option has to be re-declared there to be legal here. Every scalar also accepts \"string\" and \"null\": interpolation runs AFTER validation, so a \"${LORAWAN_PORT}\" reaches the constructor as a str. The constructor coerces each one through api/options.py.",
+	"type": "object",
+	"properties": {
+		"profile": {
+			"$comment": "The network server's topic tree and downlink body shape. The named profiles are shorthand for the four custom_* templates below; 'custom' is what makes an unlisted network server supportable without a code change. AWS IoT Core for LoRaWAN is deliberately not a named profile — its topics are whatever IoT rule the customer wrote, so there is no canonical tree to encode; see examples/connectors/lorawan.json.",
+			"type": "string",
+			"enum": ["chirpstack", "things_stack", "custom"]
+		},
+		"host": {
+			"$comment": "The MQTT broker the network server publishes to. ChirpStack: usually the same host as the server. The Things Stack: the regional cluster, e.g. eu1.cloud.thethings.network.",
+			"type": ["string", "null"]
+		},
+		"port": {
+			"$comment": "1883 plain, 8883 TLS. The Things Stack Cloud requires 8883 and drops a plaintext connection immediately and silently — the constructor warns when port 8883 is paired with tls false.",
+			"type": ["integer", "string", "null"]
+		},
+		"version": {
+			"$comment": "Defaults to 3.1.1; both ChirpStack and The Things Stack speak it. Not required here where the mqtt connector requires it — a profile-driven connector should not force a decision the profile already implies.",
+			"type": ["string", "null"],
+			"enum": ["3.1.0", "3.1.1", "5.0.0", null]
+		},
+		"application_id": {
+			"$comment": "The network server application the devices live in. ChirpStack: a UUID; omitting it makes the subscription use the '+' wildcard, which still works for a one-application deployment. The Things Stack: required, because it is both the topic segment and the MQTT username.",
+			"type": ["string", "null"]
+		},
+		"tenant_id": {
+			"$comment": "The Things Stack only, and only when application_id was given without the '@tenant' suffix — the two are joined as '{application_id}@{tenant_id}'. Accepting the halves separately is what lets a config carry them as two distinct ${VAR}s. The open-source stack has no tenant and the bare application id is correct.",
+			"type": ["string", "null"]
+		},
+		"min_downlink_interval": {
+			"$comment": "Seconds between downlinks PER DEVICE; 0 (the default) does not throttle. Not politeness: Class A queues a downlink until the node's next uplink, algorithms/auto_toggle.py re-issues its decision every tick with no feedback that the last one landed, and an EU868 gateway is bound by a 1% transmit duty cycle — so an unthrottled 10-second algorithm queues hundreds of copies of one command and starves every other node on the gateway. Overridable per device via controller_options.min_downlink_interval.",
+			"type": ["number", "string", "null"]
+		},
+		"custom_uplink_topic": {
+			"$comment": "profile 'custom' only. An MQTT topic FILTER (+ and # wildcards, not a regex), templated with {application_id}, {tenant_id}, {dev_eui}, {device_id}. The client-side routing regex is derived from it by escaping every literal segment and translating + to [^/]+ and # to .*, so one template covers both languages and they cannot drift.",
+			"type": ["string", "null"]
+		},
+		"custom_downlink_topic": {
+			"$comment": "profile 'custom' only, same placeholders plus {queue_mode}. Omitting it leaves every device on this connector read-only unless it declares controller_options.topic itself.",
+			"type": ["string", "null"]
+		},
+		"custom_downlink_body": {
+			"$comment": "profile 'custom' only. A JSON template; string values are substituted with {payload_b64}, {payload_hex}, {f_port}, {confirmed}, {dev_eui}, {device_id}, {application_id}, {tenant_id}, {queue_mode}. A value that is EXACTLY one placeholder keeps that value's native type, so \"f_port\": \"{f_port}\" emits 10 and not \"10\" — which is what lets one template express an integer port beside a string payload, in a config file that has no way to say \"integer\".",
+			"type": ["object", "array", "string", "null"]
+		},
+		"custom_topic_identifier": {
+			"$comment": "profile 'custom' only: which identifier the topic tree keys on, so the connector knows which listener option must be present and whether to normalise it as a hex EUI. ChirpStack keys on devEUI and The Things Stack on device id — the asymmetry that makes a single 'device address' option wrong.",
+			"type": ["string", "null"],
+			"enum": ["dev_eui", "device_id", null]
+		},
+		"username": {
+			"$comment": "Leave unset on The Things Stack: the application_id is the username, and the constructor fills it in and says so at INFO.",
+			"type": ["string", "null"]
+		},
+		"password": {
+			"$comment": "The Things Stack: an API key (NNSXS....). ChirpStack: the broker's own credential. Always write it as ${VAR} — a token committed to a config file grants whoever finds it downlink control of every actuator in the application.",
+			"type": ["string", "null"]
+		},
+		"client_id": {
+			"$comment": "Defaults to the connector name. Two connectors sharing a client id disconnect each other in a loop.",
+			"type": ["string", "null"]
+		},
+		"tls": {
+			"$comment": "Required by The Things Stack Cloud on port 8883.",
+			"type": ["boolean", "string", "null"]
+		},
+		"ca_certs": {
+			"$comment": "For a self-signed broker, typically a private ChirpStack.",
+			"type": ["string", "null"]
+		},
+		"certfile": {
+			"$comment": "Client certificate, for mutual TLS.",
+			"type": ["string", "null"]
+		},
+		"keyfile": {
+			"$comment": "Client private key, for mutual TLS.",
+			"type": ["string", "null"]
+		}
+	},
+	"additionalProperties": false
+}

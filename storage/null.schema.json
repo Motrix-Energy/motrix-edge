@@ -1,0 +1,7 @@
+{
+	"$schema": "https://json-schema.org/draft/2020-12/schema",
+	"$comment": "Options for the null storage backend. NullBackend.__init__ accepts no options, so any key would fail instantiation with a TypeError; this schema reports it at config load instead.",
+	"type": "object",
+	"properties": {},
+	"additionalProperties": false
+}

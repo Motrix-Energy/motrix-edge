@@ -1,0 +1,98 @@
+name: Bug report
+description: A connector, device, algorithm, storage backend, service or the supervisor does not behave as documented.
+labels: ["bug"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Thanks for taking the time to report this.
+
+        **Before you paste anything**: this repository is public. Nothing from a real installation
+        belongs in an issue — device names, topics, broker hosts, meter serials, addresses,
+        credentials. Redact your config and your logs, or reproduce it with the shipped vocabulary
+        (`p1_meter`, `shelly_plug`, `pseudo_sensor`, `AutoToggle`), which the `pseudo` connector can
+        replay with no hardware at all.
+
+        **Found a security issue?** Do not file it here — see
+        [SECURITY.md](https://github.com/Motrix-Energy/motrix-edge/blob/main/SECURITY.md).
+
+  - type: input
+    id: version
+    attributes:
+      label: Version
+      description: Commit, tag, or image tag.
+    validations:
+      required: true
+
+  - type: input
+    id: python
+    attributes:
+      label: Python and OS
+      description: 3.12 or newer is required.
+      placeholder: Python 3.12.4 on Debian 12
+    validations:
+      required: true
+
+  - type: dropdown
+    id: how
+    attributes:
+      label: How were you running it?
+      options:
+        - python main.py, against real hardware or a broker
+        - python main.py, replaying with the pseudo connector
+        - docker compose, default profile
+        - docker compose, with mqtt and/or monitoring profiles
+        - The test suite
+    validations:
+      required: true
+
+  - type: dropdown
+    id: axis
+    attributes:
+      label: Which axis is involved?
+      options:
+        - Connector
+        - Device
+        - Algorithm
+        - Storage backend
+        - Service (REST API)
+        - Supervisor, lifecycle or shutdown
+        - Config loading or schema validation
+        - Not sure
+    validations:
+      required: true
+
+  - type: textarea
+    id: what-happened
+    attributes:
+      label: What happened, and what you expected instead
+    validations:
+      required: true
+
+  - type: textarea
+    id: config
+    attributes:
+      label: The config that reproduces it
+      description: >
+        Redacted, and trimmed to the entries involved. Remember that `options` values may hold
+        `${VAR}` references — keep the references, drop the values.
+      render: json
+
+  - type: textarea
+    id: logs
+    attributes:
+      label: Log output
+      description: >
+        The relevant lines, with the full traceback if there is one. The supervisor logs a crash at
+        ERROR with its traceback, so that block is usually the answer.
+      render: text
+
+  - type: checkboxes
+    id: checks
+    attributes:
+      label: Before submitting
+      options:
+        - label: Nothing above comes from a real installation, or I have redacted it.
+          required: true
+        - label: I ran `pytest` on a clean checkout and it was green (or I have said which tests fail).
+          required: false

@@ -1,0 +1,11 @@
+blank_issues_enabled: false
+contact_links:
+  - name: Documentation
+    url: https://motrix-energy.github.io/
+    about: Configuration, Docker, the plugin system, the contributor guides and the REST API reference.
+  - name: Report a security vulnerability
+    url: https://github.com/Motrix-Energy/motrix-edge/security/advisories/new
+    about: Privately, never as a public issue. Read SECURITY.md first for what is in scope.
+  - name: Something wrong in the viewer
+    url: https://github.com/Motrix-Energy/motrix-edge-view/issues
+    about: Charts, the timeline, the single-file build — anything that reads the CSVs rather than writes them.

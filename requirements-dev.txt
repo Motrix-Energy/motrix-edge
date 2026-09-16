@@ -1,0 +1,26 @@
+# Every optional extra, so a dev checkout runs the whole suite instead of skipping the
+# parts that need a dependency the core deliberately does not ship. Everything optional is
+# guarded with pytest.importorskip, so `pytest` stays green without this file — it just
+# runs fewer tests and says which ones and why (`pytest -rs`).
+#
+# All of them begin with `-r requirements.txt`, so pip reads that file once per extra and
+# sees each core pin that many times. That is fine and not a mistake to tidy up: pip only
+# errors on *conflicting* requirements for one package, and these are byte-identical lines
+# from one file. The alternative — extras that do not pull the core — would mean
+# `pip install -r requirements-modbus.txt` alone produced a checkout that cannot start.
+-r requirements-api.txt
+-r requirements-modbus.txt
+-r requirements-homeassistant.txt
+-r requirements-lora.txt
+
+pytest
+
+# starlette's TestClient is an httpx.Client subclass and raises on import without it.
+# Test-only: the service itself never imports httpx.
+httpx==0.28.1
+
+# Lint only — `ruff check .`, configured in ruff.toml. The formatter is deliberately not
+# part of the workflow: this codebase indents with tabs and the reformat would bury every
+# real change in whitespace. Added because there was no linter at all, which is how a
+# drawer of unused imports accumulated across the test suite unnoticed.
+ruff==0.14.5

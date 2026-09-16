@@ -1,0 +1,127 @@
+timestamp,device_name,topic,payload
+2024-01-15T10:00:00,p1_meter,p1/data,"/ISK5\2M550E-1012
+
+1-0:1.8.1(000480.000*kWh)
+1-0:1.8.2(000120.500*kWh)
+1-0:1.7.0(00.118*kW)
+1-0:32.7.0(229.4*V)
+0-1:24.2.3(240115100000W)(00123.456*m3)
+!AEE1
+"
+2024-01-15T10:00:00,shelly_plug,shellies/plug-s/relay/0/power,118.4
+2024-01-15T10:00:00,pseudo_sensor,sensors/zone/temperature,"{""value"": 15.2, ""humidity"": 48.0}"
+2024-01-15T10:15:00,p1_meter,p1/data,"/ISK5\2M550E-1012
+
+1-0:1.8.1(000483.000*kWh)
+1-0:1.8.2(000120.750*kWh)
+1-0:1.7.0(00.122*kW)
+1-0:32.7.0(229.7*V)
+0-1:24.2.3(240115100000W)(00123.573*m3)
+!C226
+"
+2024-01-15T10:15:00,shelly_plug,shellies/plug-s/relay/0/power,121.9
+2024-01-15T10:15:00,pseudo_sensor,sensors/zone/temperature,"{""value"": 15.8, ""humidity"": 48.5}"
+2024-01-15T10:30:00,p1_meter,p1/data,"/ISK5\2M550E-1012
+
+1-0:1.8.1(000486.500*kWh)
+1-0:1.8.2(000121.000*kWh)
+1-0:1.7.0(00.117*kW)
+1-0:32.7.0(230.0*V)
+0-1:24.2.3(240115100000W)(00123.690*m3)
+!CAF4
+"
+2024-01-15T10:30:00,shelly_plug,shellies/plug-s/relay/0,off
+2024-01-15T10:30:00,pseudo_sensor,sensors/zone/temperature,"{""value"": 16.3, ""humidity"": 49.0}"
+2024-01-15T10:45:00,p1_meter,p1/data,"/ISK5\2M550E-1012
+
+1-0:1.8.1(000490.000*kWh)
+1-0:1.8.2(000121.250*kWh)
+1-0:1.7.0(00.131*kW)
+1-0:32.7.0(230.3*V)
+0-1:24.2.3(240115100000W)(00123.807*m3)
+!71D8
+"
+2024-01-15T10:45:00,shelly_plug,shellies/plug-s/relay/0/power,130.6
+2024-01-15T10:45:00,pseudo_sensor,sensors/zone/temperature,"{""value"": 16.9, ""humidity"": 49.5}"
+2024-01-15T11:00:00,p1_meter,p1/data,"/ISK5\2M550E-1012
+
+1-0:1.8.1(000493.500*kWh)
+1-0:1.8.2(000121.500*kWh)
+1-0:1.7.0(00.126*kW)
+1-0:32.7.0(230.6*V)
+0-1:24.2.3(240115100000W)(00123.924*m3)
+!8A47
+"
+2024-01-15T11:00:00,shelly_plug,shellies/plug-s/relay/0/power,126.1
+2024-01-15T11:00:00,pseudo_sensor,sensors/zone/temperature,"{""value"": 17.4, ""humidity"": 50.0}"
+2024-01-15T11:15:00,p1_meter,p1/data,"/ISK5\2M550E-1012
+
+1-0:1.8.1(000497.000*kWh)
+1-0:1.8.2(000121.750*kWh)
+1-0:1.7.0(00.120*kW)
+1-0:32.7.0(229.4*V)
+0-1:24.2.3(240115100000W)(00124.041*m3)
+!DC94
+"
+2024-01-15T11:15:00,shelly_plug,shellies/plug-s/relay/0/power,119.8
+2024-01-15T11:15:00,pseudo_sensor,sensors/zone/temperature,sensor offline
+2024-01-15T11:30:00,p1_meter,p1/data,"/ISK5\2M550E-1012
+
+1-0:1.8.1(000501.000*kWh)
+1-0:1.8.2(000122.000*kWh)
+1-0:1.7.0(00.142*kW)
+1-0:32.7.0(229.7*V)
+!2A93
+"
+2024-01-15T11:30:00,shelly_plug,shellies/plug-s/relay/0/power,142.3
+2024-01-15T11:30:00,pseudo_sensor,sensors/zone/temperature,"{""value"": 18.0, ""humidity"": 51.0}"
+2024-01-15T11:45:00,p1_meter,p1/data,"/ISK5\2M550E-1012
+
+1-0:1.8.1(000505.500*kWh)
+1-0:1.8.2(000122.250*kWh)
+1-0:1.7.0(00.155*kW)
+1-0:32.7.0(230.0*V)
+!BDB3
+"
+2024-01-15T11:45:00,shelly_plug,shellies/plug-s/relay/0,on
+2024-01-15T11:45:00,pseudo_sensor,sensors/zone/temperature,"{""value"": 18.6, ""humidity"": 51.5}"
+2024-01-15T12:00:00,p1_meter,p1/data,"/ISK5\2M550E-1012
+
+1-0:1.8.1(000510.000*kWh)
+1-0:1.8.2(000122.500*kWh)
+1-0:1.7.0(00.150*kW)
+1-0:32.7.0(230.3*V)
+!A733
+"
+2024-01-15T12:00:00,shelly_plug,shellies/plug-s/relay/0/power,149.7
+2024-01-15T12:00:00,pseudo_sensor,sensors/zone/temperature,"{""value"": 19.1, ""humidity"": 52.0}"
+2024-01-15T12:15:00,p1_meter,p1/data,"/ISK5\2M550E-1012
+
+1-0:1.8.1(000514.500*kWh)
+1-0:1.8.2(000122.750*kWh)
+1-0:1.7.0(00.138*kW)
+1-0:32.7.0(230.6*V)
+!9E4F
+"
+2024-01-15T12:15:00,shelly_plug,shellies/plug-s/relay/0/power,138.2
+2024-01-15T12:15:00,pseudo_sensor,sensors/zone/temperature,"{""value"": 19.5, ""humidity"": 52.5}"
+2024-01-15T12:30:00,p1_meter,p1/data,"/ISK5\2M550E-1012
+
+1-0:1.8.1(000519.000*kWh)
+1-0:1.8.2(000123.000*kWh)
+1-0:1.7.0(00.134*kW)
+1-0:32.7.0(229.4*V)
+!8518
+"
+2024-01-15T12:30:00,shelly_plug,shellies/plug-s/relay/0/power,133.9
+2024-01-15T12:30:00,pseudo_sensor,sensors/zone/temperature,"{""value"": 19.9, ""humidity"": 53.0}"
+2024-01-15T12:45:00,p1_meter,p1/data,"/ISK5\2M550E-1012
+
+1-0:1.8.1(000523.500*kWh)
+1-0:1.8.2(000123.250*kWh)
+1-0:1.7.0(00.129*kW)
+1-0:32.7.0(229.7*V)
+!0017
+"
+2024-01-15T12:45:00,shelly_plug,shellies/plug-s/relay/0/power,128.5
+2024-01-15T12:45:00,pseudo_sensor,sensors/zone/temperature,"{""value"": 20.2, ""humidity"": 53.5}"

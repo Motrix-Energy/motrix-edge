@@ -1,0 +1,24 @@
+{
+	"$schema": "https://json-schema.org/draft/2020-12/schema",
+	"$comment": "Options object for the pseudo device. Its keys (connector_options/listener_options/controller_options) are spread into Pseudo.__init__ kwargs by main.create_classes — keep in lockstep with the constructor; tests/test_config.py enforces this.",
+	"type": "object",
+	"properties": {
+		"connector_options": {
+			"type": "object",
+			"properties": {
+				"name": {
+					"type": "string",
+					"$comment": "Must reference an existing connector name — enforced by Config at load time, not by the schema"
+				}
+			},
+			"required": ["name"]
+		},
+		"listener_options": {
+			"type": "object"
+		},
+		"controller_options": {
+			"type": "object"
+		}
+	},
+	"additionalProperties": false
+}

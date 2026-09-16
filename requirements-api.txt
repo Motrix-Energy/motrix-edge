@@ -1,0 +1,16 @@
+-r requirements.txt
+
+# The read-only REST API service (services/rest_api.py). Deliberately NOT in
+# requirements.txt: a CSV-only or MQTT-only EMS should not install a web framework.
+#
+# services/rest_api.py imports fastapi and uvicorn at MODULE TOP so that
+# main.create_classes catches the ModuleNotFoundError and logs one clean per-entry skip
+# — the EMS runs, minus the API. Do not move those imports into start(): the same error
+# inside a supervised worker is a crash (five restarts, backoff, then CRITICAL) for a
+# dependency that was optional by design.
+#
+# Plain uvicorn, not uvicorn[standard]: the extras pull uvloop/httptools/watchfiles, and
+# the service pins loop="asyncio" anyway. pydantic arrives transitively with fastapi and
+# is deliberately not pinned here — the service declares no response models.
+fastapi==0.135.3
+uvicorn==0.49.0

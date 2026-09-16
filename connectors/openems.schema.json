@@ -1,0 +1,40 @@
+{
+	"$schema": "https://json-schema.org/draft/2020-12/schema",
+	"$comment": "Options for the openems connector, which subclasses HttpApiConnector. Keys map 1:1 to OpenemsConnector.__init__ kwargs (spread by main.create_classes) — and note that tests/test_config.py inspects THIS class's __init__, not the parent's, so an inherited option has to be re-declared there to be legal here. Every scalar also accepts \"string\" and \"null\": interpolation runs AFTER validation. `headers` and `auth` are deliberately absent — the Edge's credential is built from `password`.",
+	"type": "object",
+	"properties": {
+		"host": {
+			"$comment": "The OpenEMS Edge. Ignored when `base_url` is given.",
+			"type": ["string", "null"]
+		},
+		"port": {
+			"$comment": "8084 is the default for io.openems.edge.controller.api.rest.",
+			"type": ["integer", "string", "null"]
+		},
+		"scheme": {
+			"$comment": "The Edge's REST controller serves plain HTTP. Put a TLS-terminating proxy in front and set \"https\" if the traffic leaves the local network.",
+			"type": "string",
+			"enum": ["http", "https"]
+		},
+		"base_url": {
+			"$comment": "Full base URL, overriding host/port/scheme. For an Edge behind a reverse proxy on a path.",
+			"type": ["string", "null"]
+		},
+		"password": {
+			"$comment": "The OpenEMS user ROLE, not a per-user secret: guest | user | owner | admin. The Edge ignores the Basic-auth username entirely and authenticates on this. Treat it as a privilege level — `user` is enough to read, `admin` grants writes to every channel on the installation.",
+			"type": ["string", "null"]
+		},
+		"default_interval": {
+			"$comment": "Poll period in seconds for devices that declare no listener_options.interval.",
+			"type": ["number", "string", "null"]
+		},
+		"timeout": {
+			"type": ["number", "string", "null"]
+		},
+		"verify_ssl": {
+			"$comment": "Only meaningful with scheme \"https\". false disables both certificate and hostname verification.",
+			"type": ["boolean", "string", "null"]
+		}
+	},
+	"additionalProperties": false
+}

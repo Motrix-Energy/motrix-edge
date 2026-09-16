@@ -1,0 +1,165 @@
+{
+	"$schema": "https://json-schema.org/draft/2020-12/schema",
+	"type": "object",
+	"properties": {
+		"$schema": {
+			"type": "string"
+		},
+		"version": {
+			"type": "string",
+			"pattern": "^\\d+\\.\\d+\\.\\d+$"
+		},
+		"env": {
+			"type": "string",
+			"enum": ["prod", "test", "dev"]
+		},
+		"logger_level": {
+			"type": "string",
+			"enum": ["debug", "info", "warning", "error", "critical"]
+		},
+		"runtime": {
+			"type": "object",
+			"properties": {
+				"shutdown_timeout_seconds": {
+					"type": "number",
+					"minimum": 0
+				},
+				"restart": {
+					"type": "boolean"
+				},
+				"max_restarts": {
+					"type": "integer",
+					"minimum": 0
+				},
+				"backoff_seconds": {
+					"type": "number",
+					"minimum": 0
+				},
+				"max_backoff_seconds": {
+					"type": "number",
+					"minimum": 0
+				}
+			},
+			"additionalProperties": false,
+			"$comment": "Graceful-shutdown grace period and thread-restart policy. Every key is optional and merged over Config.DEFAULT_RUNTIME, so omitting the block keeps the defaults (10s shutdown, restart on, 5 restarts, 1s→60s backoff)."
+		},
+		"connectors": {
+			"type": "array",
+			"items": {
+				"type": "object",
+				"properties": {
+					"name": {
+						"type": "string"
+					},
+					"protocol": {
+						"type": "string"
+					},
+					"options": {
+						"type": "object"
+					}
+				},
+				"required": ["name", "protocol"]
+			},
+			"uniqueItems": true,
+			"$comment": "Per-name uniqueness is enforced by Config at load time — 'uniqueKeys' is not a standard JSON Schema keyword and would be silently ignored. Per-protocol options are validated by Config against connectors/<protocol>.schema.json shipped next to each connector module, so adding a connector never touches this file."
+		},
+		"algorithms": {
+			"type": "array",
+			"items": {
+				"type": "object",
+				"properties": {
+					"name": {
+						"type": "string"
+					},
+					"class": {
+						"type": "string"
+					},
+					"options": {
+						"type": "object",
+						"properties": {
+							"delay_seconds": {
+								"type": "integer",
+								"minimum": 0
+							},
+							"required_devices": {
+								"type": "array",
+								"items": {
+									"type": "string"
+								}
+							},
+							"wait_for_devices_timeout": {
+								"type": ["number", "null"],
+								"minimum": 0
+							}
+						},
+						"additionalProperties": true
+					}
+				},
+				"required": ["name", "class"]
+			},
+			"uniqueItems": true,
+			"$comment": "Per-name uniqueness is enforced by Config at load time — 'uniqueKeys' is not a standard JSON Schema keyword and would be silently ignored"
+		},
+		"storage": {
+			"type": "array",
+			"items": {
+				"type": "object",
+				"properties": {
+					"name": {
+						"type": "string"
+					},
+					"class": {
+						"type": "string"
+					},
+					"options": {
+						"type": "object"
+					}
+				},
+				"required": ["name", "class"]
+			},
+			"uniqueItems": true,
+			"$comment": "Per-name uniqueness is enforced by Config at load time — 'uniqueKeys' is not a standard JSON Schema keyword and would be silently ignored. Per-class options are validated by Config against storage/<class>.schema.json shipped next to each backend module, so adding a storage backend never touches this file."
+		},
+		"devices": {
+			"type": "array",
+			"items": {
+				"type": "object",
+				"properties": {
+					"name": {
+						"type": "string"
+					},
+					"kind": {
+						"type": "string",
+						"$comment": "Per-kind options are validated by Config against devices/<kind>.schema.json shipped next to each device module, so adding a device never touches this file"
+					},
+					"options": {
+						"type": "object"
+					}
+				},
+				"required": ["name", "kind"]
+			},
+			"uniqueItems": true,
+			"$comment": "Per-name uniqueness is enforced by Config at load time — 'uniqueKeys' is not a standard JSON Schema keyword and would be silently ignored"
+		},
+		"services": {
+			"type": "array",
+			"items": {
+				"type": "object",
+				"properties": {
+					"name": {
+						"type": "string"
+					},
+					"class": {
+						"type": "string"
+					},
+					"options": {
+						"type": "object"
+					}
+				},
+				"required": ["name", "class"]
+			},
+			"uniqueItems": true,
+			"$comment": "Supervised workers that own no devices — the read-only REST API is the first. Per-name uniqueness is enforced by Config at load time — 'uniqueKeys' is not a standard JSON Schema keyword and would be silently ignored. Per-class options are validated by Config against services/<class>.schema.json shipped next to each service module, so adding a service never touches this file. A service is not part of the run's liveness: main waits on connectors only, so a config with services and no connectors exits immediately."
+		}
+	}
+}

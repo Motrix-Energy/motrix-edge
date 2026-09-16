@@ -1,0 +1,8 @@
+timestamp,device_name,topic,payload
+2024-01-15T10:00:00,p1_meter,sensors/p1/data,"{""power"":1500,""voltage"":230}"
+2024-01-15T10:00:05,shelly_plug,shellies/plug/relay/0/power,120.5
+2024-01-15T10:00:10,p1_meter,sensors/p1/data,"{""power"":1450,""voltage"":229}"
+2024-01-15T10:00:15,shelly_plug,shellies/plug/relay/0,on
+2024-01-15T10:00:20,p1_meter,sensors/p1/data,"{""power"":1600,""voltage"":231}"
+2024-01-15T10:00:25,shelly_plug,shellies/plug/relay/0/power,135.2
+2024-01-15T10:00:30,p1_meter,sensors/p1/data,"{""power"":1380,""voltage"":230}"

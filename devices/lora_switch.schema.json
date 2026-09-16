@@ -1,0 +1,180 @@
+{
+	"$schema": "https://json-schema.org/draft/2020-12/schema",
+	"$comment": "Options object for a writable LoRa end node. A near-copy of lora.schema.json, as modbus_switch and ha_switch are of theirs: a cross-file $ref would be cleaner but Config._load_plugin_schema reads each schema standalone with no resolver base, so it would never resolve. Keep the two in step by hand. Options object for the generic LoRa end node. Its three keys (connector_options/listener_options/controller_options) are spread into LoRa.__init__ by main.create_classes — keep in lockstep with the constructor; tests/test_config.py enforces this. The payload map lives here rather than in code so one device class covers every node model behind every network server: LoRaWAN standardises the framing and standardises nothing about the bytes inside.",
+	"type": "object",
+	"properties": {
+		"connector_options": {
+			"type": "object",
+			"properties": {
+				"name": {
+					"type": "string",
+					"$comment": "Must reference an existing connector name — enforced by Config at load time, not by the schema. Works with a 'lorawan' connector (network server over MQTT), a 'lora' one (a radio wired to this host), a 'pseudo' one declaring emulates, or a plain 'mqtt' one for a read-only path against a network server no profile describes."
+				}
+			},
+			"required": ["name"]
+		},
+		"listener_options": {
+			"type": "object",
+			"properties": {
+				"profile": {
+					"$comment": "Which uplink JSON envelope the network server wraps the payload in. Declared on the DEVICE, not read from the connector: a device must work with any connector — including a pseudo one replaying a capture, which knows only `emulates` — and Config injects nothing but `protocol` into connector_options. 'native' is what connectors/lora.py emits over a directly-attached radio. 'custom' takes its paths from `paths` below.",
+					"type": "string",
+					"enum": ["chirpstack", "things_stack", "native", "custom"]
+				},
+				"dev_eui": {
+					"$comment": "This node's 16-hex-digit EUI; separators are stripped and hex is lower-cased. Two jobs: connectors/lorawan.py builds the topic filter and routing regex from it, and this device rejects an uplink whose envelope carries a different one. The second is not redundant — it catches a mis-synthesised regex, a fan-out subscription and a server that shares a topic, and it is the only identity check that survives replay, where PseudoConnector routes by device name and never evaluates a topic.",
+					"type": ["string", "null"]
+				},
+				"device_id": {
+					"$comment": "The Things Stack routes topics by this human-readable id rather than by devEUI, so it is required there and ignored elsewhere. An opaque operator-chosen name — never normalised.",
+					"type": ["string", "null"]
+				},
+				"address": {
+					"$comment": "Serial connector only (protocol 'lora'): which node's frames this device claims. Every frame arrives on one stream with no topic to route by, so it is matched against the dialect's (?P<address>...) group — or, when the dialect exposes none, against the leading bytes of the payload, because a raw point-to-point link has no MAC addressing at all and who sent a frame can only be inside the frame. Separators are stripped and hex is lower-cased. `dev_eui` is accepted in its place.",
+					"type": ["string", "null"]
+				},
+				"f_port": {
+					"$comment": "Serial connector only (protocol 'lora'): claim only frames arriving on this port, the other half of routing one shared stream. Distinct from fields[].f_port, which selects a payload LAYOUT once a frame has already been routed here. A device declaring neither this nor `address` receives every frame — fine for a single node, and warned about when several devices do it.",
+					"type": ["integer", "string", "null"]
+				},
+				"subscription": {
+					"$comment": "Overrides the synthesised MQTT topic filter. Present so a network server no profile describes is still usable: declare `subscription` and `pattern` by hand and the connector becomes a plain MQTT one that happens to build LoRaWAN downlink bodies.",
+					"type": ["string", "array", "null"]
+				},
+				"pattern": {
+					"$comment": "Overrides the synthesised client-side routing regex. Taken verbatim — not escaped, not anchored, not case-folded — because a hand-written regex must mean what it says.",
+					"type": ["string", "null"]
+				},
+				"paths": {
+					"$comment": "profile 'custom' only: where each thing sits in this server's uplink JSON. Dotted segments, [n] for a literal index and [*] for 'the first element that yields a value'. Use [*] for gateway arrays — index 0 is whichever gateway the server happened to list first, so a hard-coded 0 silently changes meaning the day a second gateway comes online. See examples/connectors/lorawan.json for AWS IoT Core expressed this way.",
+					"type": ["object", "null"],
+					"properties": {
+						"payload": { "$comment": "Base64 application payload. The one path that must be right.", "type": ["string", "array", "null"] },
+						"decoded": { "$comment": "The network server codec's output, read by fields[].source.", "type": ["string", "array", "null"] },
+						"f_port": { "type": ["string", "array", "null"] },
+						"f_cnt": { "type": ["string", "array", "null"] },
+						"dev_eui": { "type": ["string", "array", "null"] },
+						"device_id": { "type": ["string", "array", "null"] },
+						"rssi": { "type": ["string", "array", "null"] },
+						"snr": { "type": ["string", "array", "null"] }
+					},
+					"additionalProperties": false
+				},
+				"byte_order": {
+					"$comment": "Default byte order for multi-byte fields, overridable per field. The LoRaWAN spec is little-endian for DevEUI and DevAddr, but that is the MAC layer and says nothing about your application payload, which is whatever the node vendor's decoder says it is. Declared per device, not per connector: two nodes behind one network server routinely disagree.",
+					"type": "string",
+					"enum": ["big", "little"]
+				},
+				"max_payload_bytes": {
+					"$comment": "Sanity bound on the decoded application payload; a larger one is rejected as an envelope mismatch rather than sliced. Defaults to 256 — above the 222-byte SF7 maximum, so a legitimate uplink can never trip it.",
+					"type": ["integer", "string", "null"]
+				},
+				"fields": {
+					"$comment": "One entry per value to extract. The direct analogue of devices/modbus_meter.py's `registers`, with one difference that matters: offsets are in BYTES here, because LoRaWAN payloads are byte-packed where Modbus counts 16-bit words.",
+					"type": "array",
+					"items": {
+						"type": "object",
+						"properties": {
+							"name": {
+								"$comment": "The stable metric name and the key in self.data['fields']. MetricSource forbids positional keys, so this is where naming comes from.",
+								"type": "string"
+							},
+							"offset": {
+								"$comment": "Zero-based BYTE offset into the decoded application payload. Mutually exclusive with `source`.",
+								"type": ["integer", "string", "null"]
+							},
+							"source": {
+								"$comment": "Dotted path into the network server codec's decoded output, same syntax as `paths`. Mutually exclusive with `offset` (source wins, with a warning). This is how a server-side codec is consumed — rather than passing its object through wholesale, which would need its own flattening convention, its own name-collision rule, and would have no way to express `role`, quietly costing the node its EnergyMeter capability.",
+								"type": ["string", "array", "null"]
+							},
+							"data_type": {
+								"$comment": "How to read the bytes. UINT24/INT24 are here because airtime is paid per byte, so a 24-bit counter is common precisely because 32 bits is one byte too many. Ignored when `source` is used and the decoded value is already typed.",
+								"type": "string",
+								"enum": ["UINT8", "INT8", "UINT16", "INT16", "UINT24", "INT24", "UINT32", "INT32", "UINT64", "INT64", "FLOAT32", "FLOAT64", "BOOL", "STRING", "RAW"]
+							},
+							"length": {
+								"$comment": "Bytes to read. Defaults from data_type; required for STRING and RAW, which have no natural width.",
+								"type": ["integer", "string", "null"]
+							},
+							"byte_order": {
+								"$comment": "Per-field override of the device default.",
+								"type": "string",
+								"enum": ["big", "little"]
+							},
+							"bit": {
+								"$comment": "Extract one bit as a boolean. Zero-based with LSB = 0, which is what a datasheet's 'bit 0 = alarm' means. Packed status flags are near-universal on LoRa nodes, where every byte costs airtime. `scale` and `bias` are meaningless with it and are ignored with one warning at startup.",
+								"type": ["integer", "string", "null"]
+							},
+							"f_port": {
+								"$comment": "Decode this field only on uplinks arriving on this LoRaWAN port. Nodes routinely multiplex layouts by port — 1 periodic, 2 status, 10 config echo — and without this one physical node would need one EMS device per port, which is impossible: they would all synthesise the same routing regex and collide in the connector's callback table. A field whose port does not match is carried forward from the previous uplink with its original f_cnt, so a reader can tell fresh from carried. Omitting it decodes on every port.",
+								"type": ["integer", "string", "null"]
+							},
+							"scale": {
+								"$comment": "value = raw * scale + bias. A multiplier, matching how datasheets state it ('LSB = 0.01 kWh'), so there is no mental inversion at config time.",
+								"type": ["number", "string", "null"]
+							},
+							"bias": {
+								"$comment": "Added after scaling, because that is the order a vendor decoder writes it: a temperature is raw * 0.1 - 40, not (raw - 400) * 0.1.",
+								"type": ["number", "string", "null"]
+							},
+							"unit": {
+								"$comment": "Carried into self.data so a stored reading is self-describing. Never used to convert — see `role`.",
+								"type": ["string", "null"]
+							},
+							"role": {
+								"$comment": "How a generic node knows which field is its kWh total. A closed enum, not free text, so a typo is a config warning rather than a total that silently reports 0.0 for the life of the deployment. It promises the SCALED value is already kWh — no conversion is derived from `unit`, because a typo there would rescale a revenue reading by 1000. Several fields may carry it; they are summed.",
+								"type": "string",
+								"enum": ["energy_import_kwh"]
+							}
+						},
+						"required": ["name"],
+						"additionalProperties": false
+					}
+				}
+			},
+			"additionalProperties": false
+		},
+		"controller_options": {
+			"$comment": "The downlink routing for this switch. f_port is required in practice: without it the connector drops every command, and LoRaSwitch says so once at startup.",
+			"type": "object",
+			"properties": {
+				"f_port": {
+					"$comment": "The LoRaWAN application port the downlink is sent on, 1-223. No default, deliberately: a command on a port the node does not listen on is accepted by the network server, delivered, and ignored — indistinguishable from the delivery delay Class A produces anyway.",
+					"type": ["integer", "string", "null"]
+				},
+				"confirmed": {
+					"$comment": "Ask the node to acknowledge. Costs a second airtime slot and, on The Things Stack, blocks the queue until acked or expired. Right for a breaker, wrong for a setpoint refreshed every 15 minutes. Defaults to false.",
+					"type": ["boolean", "string", "null"]
+				},
+				"queue_mode": {
+					"$comment": "The Things Stack only. 'replace' clears the queue first and is the default, because a downlink queued forty minutes ago saying 'on' must not be delivered after the algorithm has since decided 'off'. ChirpStack offers no MQTT equivalent — there, min_downlink_interval is the only mitigation.",
+					"type": "string",
+					"enum": ["push", "replace"]
+				},
+				"payload_encoding": {
+					"$comment": "How on_payload/off_payload are written. Declared, never inferred: 'does this look like hex' would make \"00\" and \"0\" mean different things depending on parity. Defaults to hex, which is how every node vendor documents a downlink.",
+					"type": "string",
+					"enum": ["hex", "utf8", "base64"]
+				},
+				"on_payload": {
+					"$comment": "Bytes sent for the Switch COMMAND_ON token, in payload_encoding. Defaults to \"01\".",
+					"type": ["string", "null"]
+				},
+				"off_payload": {
+					"$comment": "Defaults to \"00\".",
+					"type": ["string", "null"]
+				},
+				"min_downlink_interval": {
+					"$comment": "Per-device override of the connector's throttle. A breaker wants prompt action; a setpoint refreshed quarter-hourly does not need one queued downlink per algorithm tick.",
+					"type": ["number", "string", "null"]
+				},
+				"topic": {
+					"$comment": "Raw downlink topic, bypassing the profile's template. The escape hatch for a network server whose downlink tree the profile does not describe.",
+					"type": ["string", "null"]
+				}
+			},
+			"additionalProperties": false
+		}
+	},
+	"additionalProperties": false
+}

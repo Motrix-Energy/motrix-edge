@@ -1,0 +1,123 @@
+{
+	"$schema": "https://json-schema.org/draft/2020-12/schema",
+	"$comment": "Options object for the generic Modbus register-map meter. Its three keys (connector_options/listener_options/controller_options) are spread into ModbusMeter.__init__ by main.create_classes — keep in lockstep with the constructor; tests/test_config.py enforces this. The register map lives here rather than in code so one device class covers many meter models: Modbus standardises the framing and standardises nothing about what lives at which address.",
+	"type": "object",
+	"properties": {
+		"connector_options": {
+			"type": "object",
+			"properties": {
+				"name": {
+					"type": "string",
+					"$comment": "Must reference an existing connector name — enforced by Config at load time, not by the schema"
+				}
+			},
+			"required": ["name"]
+		},
+		"listener_options": {
+			"type": "object",
+			"properties": {
+				"interval": {
+					"$comment": "Poll period in seconds; falls back to the connector's default_interval.",
+					"type": ["number", "string", "null"]
+				},
+				"device_id": {
+					"$comment": "This meter's Modbus unit id, overriding the connector's default. The useful level when one TCP gateway fronts several RS-485 slaves.",
+					"type": ["integer", "string", "null"]
+				},
+				"word_order": {
+					"$comment": "Which 16-bit half of a multi-word value comes first. Declared per device, not per connector: two meters behind one gateway routinely disagree, so it is not a property of the transport.",
+					"type": "string",
+					"enum": ["big", "little"]
+				},
+				"registers": {
+					"$comment": "One entry per Modbus request. There is deliberately no contiguous-address grouping: meters leave holes in their maps and many answer IllegalDataAddress for the WHOLE PDU when any address in a span is unimplemented, which would turn '11 of 12 registers work' into '0 of 12' and name a synthetic range instead of the register to fix.",
+					"type": "array",
+					"items": {
+						"type": "object",
+						"properties": {
+							"name": {
+								"$comment": "The stable metric name, and the join key between the connector's read and this device's decoder. MetricSource forbids positional keys, so this is where naming comes from.",
+								"type": "string"
+							},
+							"address": {
+								"$comment": "The ZERO-BASED protocol address, not the 4xxxx data-model number. Deliberately never auto-translated: some devices genuinely expose protocol address 40001, so the heuristic would be silently wrong for them.",
+								"type": ["integer", "string"]
+							},
+							"type": {
+								"$comment": "Which of the four Modbus tables. They are four separate address spaces — address 0 is four different things.",
+								"type": "string",
+								"enum": ["holding", "input", "coil", "discrete"]
+							},
+							"data_type": {
+								"$comment": "How to decode the words. Mirrors pymodbus's DATATYPE member names so a vendor's pymodbus example transfers 1:1, plus RAW for 'hand me the words'. Ignored for coil/discrete, which decode to bool.",
+								"type": "string",
+								"enum": ["INT16", "UINT16", "INT32", "UINT32", "INT64", "UINT64", "FLOAT32", "FLOAT64", "STRING", "RAW"]
+							},
+							"count": {
+								"$comment": "Words to read. Defaults from data_type (1/2/4); required for STRING, and the override for a vendor padding a 16-bit value into a 32-bit slot.",
+								"type": ["integer", "string", "null"]
+							},
+							"scale": {
+								"$comment": "value = raw * scale. A multiplier, matching how datasheets state it ('LSB = 0.01 kWh'), so there is no mental inversion at config time.",
+								"type": ["number", "string", "null"]
+							},
+							"unit": {
+								"$comment": "Carried into self.data so a stored reading is self-describing. Never used to convert — see `role`.",
+								"type": ["string", "null"]
+							},
+							"device_id": {
+								"$comment": "Per-register unit-id override; the escape hatch for a meter that aggregates a second slave.",
+								"type": ["integer", "string", "null"]
+							},
+							"word_order": {
+								"type": "string",
+								"enum": ["big", "little"]
+							},
+							"role": {
+								"$comment": "How a generic meter knows which register is its kWh total. A closed enum, not free text, so a typo is a config warning rather than a total that silently reports 0.0 for the life of the deployment. It promises the SCALED value is already kWh — no conversion is derived from `unit`, because a typo there would rescale a revenue reading by 1000. Several registers may carry it (a two-tariff meter has T1 and T2); they are summed.",
+								"type": "string",
+								"enum": ["energy_import_kwh"]
+							}
+						},
+						"required": ["name", "address"],
+						"additionalProperties": false
+					}
+				}
+			},
+			"additionalProperties": false
+		},
+		"controller_options": {
+			"$comment": "Meaningful only on the modbus_switch kind — a plain modbus_meter is not writable, so Device.control refuses commands before they reach the connector.",
+			"type": "object",
+			"properties": {
+				"kind": {
+					"type": "string",
+					"enum": ["coil", "register"]
+				},
+				"address": {
+					"type": ["integer", "string", "null"]
+				},
+				"device_id": {
+					"type": ["integer", "string", "null"]
+				},
+				"on_value": {
+					"$comment": "kind=register only: the value written for the Switch COMMAND_ON token. Set it to a number for a setpoint channel.",
+					"type": ["number", "string", "null"]
+				},
+				"off_value": {
+					"type": ["number", "string", "null"]
+				},
+				"scale": {
+					"$comment": "kind=register only: raw = round(command / scale), the inverse of the read path.",
+					"type": ["number", "string", "null"]
+				},
+				"signed": {
+					"$comment": "kind=register only: picks the 0..65535 vs -32768..32767 range check.",
+					"type": ["boolean", "string", "null"]
+				}
+			},
+			"additionalProperties": false
+		}
+	},
+	"additionalProperties": false
+}

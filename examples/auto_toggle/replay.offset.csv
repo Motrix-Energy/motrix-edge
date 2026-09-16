@@ -1,0 +1,61 @@
+timestamp,device_name,topic,payload
+2024-03-31T01:00:00+01:00,p1_meter,p1/data,"/ISK5\2M550E-1012
+
+1-0:1.8.1(000527.000*kWh)
+1-0:1.8.2(000120.500*kWh)
+1-0:1.7.0(00.125*kW)
+1-0:32.7.0(229.4*V)
+!9E37
+"
+2024-03-31T01:00:00+01:00,shelly_plug,shellies/plug-s/relay/0/power,124.6
+2024-03-31T01:00:00+01:00,pseudo_sensor,sensors/zone/temperature,"{""value"": 12.4, ""humidity"": 48.0}"
+2024-03-31T01:30:00+01:00,p1_meter,p1/data,"/ISK5\2M550E-1012
+
+1-0:1.8.1(000530.500*kWh)
+1-0:1.8.2(000120.750*kWh)
+1-0:1.7.0(00.131*kW)
+1-0:32.7.0(229.7*V)
+!A923
+"
+2024-03-31T01:30:00+01:00,shelly_plug,shellies/plug-s/relay/0/power,131.1
+2024-03-31T01:30:00+01:00,pseudo_sensor,sensors/zone/temperature,"{""value"": 12.1, ""humidity"": 48.5}"
+2024-03-31T03:00:00+02:00,p1_meter,p1/data,"/ISK5\2M550E-1012
+
+1-0:1.8.1(000534.000*kWh)
+1-0:1.8.2(000121.000*kWh)
+1-0:1.7.0(00.128*kW)
+1-0:32.7.0(230.0*V)
+!0B4B
+"
+2024-03-31T03:00:00+02:00,shelly_plug,shellies/plug-s/temperature,41.2
+2024-03-31T03:00:00+02:00,pseudo_sensor,sensors/zone/temperature,"{""value"": 11.8, ""humidity"": 49.0}"
+2024-03-31T03:30:00+02:00,p1_meter,p1/data,"/ISK5\2M550E-1012
+
+1-0:1.8.1(000537.500*kWh)
+1-0:1.8.2(000121.250*kWh)
+1-0:1.7.0(00.119*kW)
+1-0:32.7.0(230.3*V)
+!F70F
+"
+2024-03-31T03:30:00+02:00,shelly_plug,shellies/plug-s/relay/0/power,119.4
+2024-03-31T03:30:00+02:00,pseudo_sensor,sensors/zone/temperature,"{""value"": 12.6, ""humidity"": 49.5}"
+2024-03-31T04:00:00+02:00,p1_meter,p1/data,"/ISK5\2M550E-1012
+
+1-0:1.8.1(000541.000*kWh)
+1-0:1.8.2(000121.500*kWh)
+1-0:1.7.0(00.145*kW)
+1-0:32.7.0(230.6*V)
+!EFBE
+"
+2024-03-31T04:00:00+02:00,shelly_plug,shellies/plug-s/relay/0/power,145.2
+2024-03-31T04:00:00+02:00,pseudo_sensor,sensors/zone/temperature,"{""value"": 13.3, ""humidity"": 50.0}"
+2024-03-31T04:30:00+02:00,p1_meter,p1/data,"/ISK5\2M550E-1012
+
+1-0:1.8.1(000544.500*kWh)
+1-0:1.8.2(000121.750*kWh)
+1-0:1.7.0(00.152*kW)
+1-0:32.7.0(229.4*V)
+!A6F9
+"
+2024-03-31T04:30:00+02:00,shelly_plug,shellies/plug-s/relay/0/power,151.7
+2024-03-31T04:30:00+02:00,pseudo_sensor,sensors/zone/temperature,"{""value"": 14.0, ""humidity"": 50.5}"

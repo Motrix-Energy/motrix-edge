@@ -1,0 +1,57 @@
+name: Feature request
+description: Suggest a capability, a contract change, or something the runtime should do differently.
+labels: ["enhancement"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Two things worth checking first, because they decide most proposals:
+
+        - **New plugins do not need a feature request.** A connector, device, algorithm, storage
+          backend or service is added entirely inside its own axis package, with no central file to
+          edit — that is the architecture. The recipes are in
+          [CONTRIBUTING.md](https://github.com/Motrix-Energy/motrix-edge/blob/main/CONTRIBUTING.md).
+          Open a pull request instead.
+        - **The test suite runs in seconds, offline, with no broker and no hardware.** That is a
+          contract, not an accident. A feature that cannot be tested that way needs a design for how
+          it will be.
+
+        Changing the CSV output is a cross-repository event with
+        [its own procedure](https://motrix-energy.github.io/contribute/storage-format-changes/) —
+        read that before proposing one.
+
+  - type: textarea
+    id: problem
+    attributes:
+      label: What are you trying to do?
+      description: The situation, not the solution. What does the runtime make hard or impossible today?
+    validations:
+      required: true
+
+  - type: textarea
+    id: proposal
+    attributes:
+      label: What should it do instead?
+    validations:
+      required: true
+
+  - type: dropdown
+    id: axis
+    attributes:
+      label: Where would this live?
+      options:
+        - A new or changed capability (api/capabilities.py)
+        - The plugin loader or config schema
+        - Supervision, lifecycle or shutdown
+        - Storage or the output format
+        - The REST API
+        - Simulation, replay or the clock
+        - Somewhere else / not sure
+    validations:
+      required: true
+
+  - type: textarea
+    id: testing
+    attributes:
+      label: How would it be tested without hardware?
+      description: Mocked transport, scripted replay, subprocess run — whatever fits. Say "not sure" if you are not.

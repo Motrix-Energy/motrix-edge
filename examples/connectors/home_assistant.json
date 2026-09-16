@@ -1,0 +1,86 @@
+{
+	"$schema": "../../config.schema.json",
+	"$comment": "Reading a Home Assistant energy sensor and actuating a switch, over the HA WebSocket API. HA_TOKEN is a long-lived access token carrying the FULL permissions of the user that created it — create a dedicated non-admin HA user for the EMS. Needs `pip install -r requirements-homeassistant.txt`.",
+	"version": "0.0.0",
+	"env": "prod",
+	"logger_level": "info",
+
+	"connectors": [
+		{
+			"name": "ha",
+			"protocol": "home_assistant",
+			"options": {
+				"url": "${HA_URL:-ws://homeassistant.local:8123/api/websocket}",
+				"access_token": "${HA_TOKEN}",
+				"verify_ssl": "${HA_VERIFY_SSL:-true}",
+				"receive_timeout": 30
+			}
+		}
+	],
+
+	"devices": [
+		{
+			"name": "grid_import",
+			"kind": "ha_entity",
+			"options": {
+				"connector_options": { "name": "ha" },
+				"listener_options": {
+					"entity_id": "sensor.grid_import_energy",
+					"energy_unit": "kWh"
+				},
+				"controller_options": {}
+			}
+		},
+		{
+			"name": "living_room_temperature",
+			"kind": "ha_entity",
+			"options": {
+				"connector_options": { "name": "ha" },
+				"listener_options": {
+					"entity_id": "sensor.living_room_temperature",
+					"metric_attributes": ["battery_level"]
+				},
+				"controller_options": {}
+			}
+		},
+		{
+			"name": "water_heater",
+			"kind": "ha_switch",
+			"options": {
+				"connector_options": { "name": "ha" },
+				"listener_options": { "entity_id": "switch.water_heater" },
+				"controller_options": {
+					"entity_id": "switch.water_heater",
+					"commands": {
+						"boost": {
+							"domain": "climate",
+							"service": "set_temperature",
+							"service_data": { "temperature": 60 },
+							"target": { "entity_id": "climate.water_heater" }
+						}
+					}
+				}
+			}
+		}
+	],
+
+	"algorithms": [
+		{
+			"name": "Auto Toggle",
+			"class": "auto_toggle",
+			"options": {
+				"required_devices": ["grid_import", "water_heater"],
+				"delay_seconds": 60,
+				"wait_for_devices_timeout": 120
+			}
+		}
+	],
+
+	"storage": [
+		{
+			"name": "local_csv",
+			"class": "csv_file",
+			"options": { "output_dir": "${EMS_STORAGE_DIR:-data/storage}" }
+		}
+	]
+}

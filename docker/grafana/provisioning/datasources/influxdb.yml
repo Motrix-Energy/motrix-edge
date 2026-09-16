@@ -1,0 +1,22 @@
+# Provisioned InfluxDB datasource for the EMS.
+#
+# ${VAR} here is expanded by Grafana from its OWN container environment, not from the
+# compose .env file — the docker-compose.yml grafana service passes the INFLUXDB_*
+# variables through for exactly this reason.
+apiVersion: 1
+
+datasources:
+  - name: InfluxDB
+    uid: motrix-influxdb
+    type: influxdb
+    access: proxy
+    url: ${INFLUXDB_URL}
+    isDefault: true
+    editable: false
+    jsonData:
+      version: Flux
+      organization: ${INFLUXDB_ORG}
+      defaultBucket: ${INFLUXDB_BUCKET}
+      httpMode: POST
+    secureJsonData:
+      token: ${INFLUXDB_TOKEN}

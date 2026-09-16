@@ -1,0 +1,31 @@
+{
+	"$schema": "https://json-schema.org/draft/2020-12/schema",
+	"$comment": "Options for the pseudo connector. Keys map 1:1 to PseudoConnector.__init__ kwargs (spread by main.create_classes) — keep in lockstep with the constructor; tests/test_config.py enforces this.",
+	"type": "object",
+	"properties": {
+		"replay_file": {
+			"type": "string"
+		},
+		"speed": {
+			"type": "number",
+			"minimum": 0
+		},
+		"loop": {
+			"type": "boolean"
+		},
+		"control_log": {
+			"type": "string"
+		},
+		"emulates": {
+			"$comment": "The transport this replay stands in for, e.g. \"mqtt\". Devices dispatch on the protocol Config injects into their connector_options; without this they see \"pseudo\" and refuse the payload. Omit it when replaying only pseudo devices.",
+			"type": ["string", "null"]
+		},
+		"step_timeout_seconds": {
+			"$comment": "How long the replay waits for the algorithms to finish a timestep before advancing anyway. 0 disables lockstep (fire-and-forget, non-deterministic); null waits forever.",
+			"type": ["number", "null"],
+			"minimum": 0
+		}
+	},
+	"required": ["replay_file"],
+	"additionalProperties": false
+}

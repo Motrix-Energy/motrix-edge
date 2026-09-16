@@ -1,0 +1,20 @@
+-r requirements.txt
+
+# The Home Assistant WebSocket connector (connectors/home_assistant.py). Deliberately NOT
+# in requirements.txt: a site with no Home Assistant should not install a WebSocket stack.
+#
+# connectors/home_assistant.py imports websocket at MODULE TOP so main.create_classes
+# catches the ModuleNotFoundError and logs one clean per-entry skip — the EMS runs, minus
+# Home Assistant. Do not move that import into start(): the same error inside a supervised
+# worker is a crash loop for a dependency that was optional by design. Same rule and same
+# reason as requirements-api.txt.
+#
+# The name is a trap worth stating once: the distribution is `websocket-client`, the import
+# is `import websocket`, and `websockets` (plural, no hyphen) is a DIFFERENT and
+# incompatible asyncio-first library. Installing the wrong one gives a module that imports
+# and then fails at the first call.
+#
+# websocket-client, not websockets: the synchronous WebSocket's blocking recv() loop is
+# exactly the shape Connector.start() wants, and stop() unblocks it with abort(). An
+# asyncio client would need its own event loop inside a supervised thread.
+websocket-client==1.9.0

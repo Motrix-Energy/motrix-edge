@@ -1,0 +1,11 @@
+{
+	"$comment": "Checksums of the golden fixture. Regenerate with `python examples/generate.py`; tests/test_storage_contract.py verifies them, and Motrix Edge View verifies its vendored copy against this same file.",
+	"storage_format_version": "1.0",
+	"files": {
+		"auto_toggle/replay.naive.csv": "8e56281dd15f0031d50539d0c2882d843cc7c0f5936a341aaea8d4751c116f14",
+		"auto_toggle/replay.offset.csv": "2cc39edbd71e20ab0b58372d4c2e3f61a592b544d34d2a7531e6000f89da0656",
+		"auto_toggle/expected/device_data.csv": "23c3d233e0aa8eadaabfee963c72c21936d09bfea5c0492ac3ab02b529391093",
+		"auto_toggle/expected/algorithm_decisions.csv": "2adc73a18423bcb70c59158e072e18c6f9f57ef505b0fe194ab8ca36abee92d1",
+		"auto_toggle/expected/control.log": "ba52fe3dee753746200c4c44894fab8bd9d58c68d015b789aa38d541ea2c3661"
+	}
+}

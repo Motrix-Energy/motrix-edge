@@ -1,0 +1,31 @@
+Motrix Edge
+Copyright 2026 Radisio
+
+This product includes software developed at Radisio as part of the Locomotrice
+project.
+
+Licensed under the Apache License, Version 2.0 (the "License"); you may not use
+this file except in compliance with the License. You may obtain a copy of the
+License at
+
+    http://www.apache.org/licenses/LICENSE-2.0
+
+Unless required by applicable law or agreed to in writing, software distributed
+under the License is distributed on an "AS IS" BASIS, WITHOUT WARRANTIES OR
+CONDITIONS OF ANY KIND, either express or implied. See the License for the
+specific language governing permissions and limitations under the License.
+
+-------------------------------------------------------------------------------
+Third-party components
+-------------------------------------------------------------------------------
+
+None are reproduced here, and that is a statement about how this repository is
+distributed rather than an omission. Nothing is vendored: every dependency in
+requirements.txt and the four optional extras is resolved from PyPI at install
+time, so their licences travel with the wheels pip fetches rather than with this
+source tree.
+
+The sibling Motrix Edge View repository does carry a third-party list, because its
+single-file build inlines its dependencies into the artifact it publishes. That
+is the condition that would change this section: ship an image or an archive
+with dependencies baked in, and their notices have to travel with it.
