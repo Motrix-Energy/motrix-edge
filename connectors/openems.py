@@ -107,9 +107,17 @@ class OpenemsConnector(HttpApiConnector):
 		# CRITICAL. The parent's send() guards only the requests call, which is why this
 		# override cannot simply delegate.
 		try:
+			# The parent builds its session per run of start() and drops it in the same
+			# finally, so between construction and the first run — and between a crash and
+			# the supervisor's restart — there is none. Reading self._session directly here
+			# was an AttributeError on None, which is not one of the four types the handlers
+			# below name, so it escaped as an algorithm crash. Inherited, not re-written.
+			session = self._live_session(device, payload)
+			if session is None:
+				return
 			value = self._resolve_value(payload, options)
 			url = f"{self.base_url}/rest/channel/{component}/{channel}"
-			response = self._session.post(url, json={"value": value}, timeout=self.timeout)
+			response = session.post(url, json={"value": value}, timeout=self.timeout)
 			response.raise_for_status()
 			self.LOGGER.info(f"Set {component}/{channel} to {value!r} for '{device.name}' (status {response.status_code})")
 		except requests.HTTPError as e:

@@ -74,10 +74,10 @@ carries a visible `off` → `on` transition rather than eighteen identical rows.
 
 `PseudoConnector`'s optional `control_log` is a raw `f.write` — no header, no quoting.
 Every JSON command contains commas, so a CSV parser mis-splits it; split on the first two
-commas only, or better, do not read it at all. Its line terminator is also
-**platform-dependent**, because it is written in text mode without `newline=""` and
-Python therefore translates `\n` (CRLF on Windows, LF elsewhere) — where the two CSVs are
-CRLF everywhere, since `csv` writes the terminator itself.
+commas only, or better, do not read it at all. Its line terminator is **`\n` on every
+platform**: the connector passes `newline="\n"`, so text mode cannot translate it to
+`os.linesep` and `--check` does not decide drift by which machine ran it. LF here, CRLF in
+the two CSVs — this file is not CSV, and there the `csv` module writes the terminator.
 
 It is a debug log, not an interchange format; the authoritative decision record is
 `algorithm_decisions.csv`, and the two duplicate each other whenever a `csv_file` backend

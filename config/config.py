@@ -15,16 +15,29 @@ from api.options import float_option
 from config.enums.environment import Environment
 from config.enums.logger_level import LoggerLevel
 from config.log_format import make_handler
+from config.version import CONFIG_FORMAT_VERSION, Compatibility, compare
 
 # ${VAR} or ${VAR:-default} — group 1 is the var name, group 2 the default
 # (None when no ":-" is present, "" for a bare "${VAR:-}")
 _ENV_PATTERN = compile(r"\$\{([A-Za-z_][A-Za-z0-9_]*)(?::-([^}]*))?\}")
 
-# A protocol/kind/class value must be a plain module name before it is used to locate
-# connectors/<protocol>.schema.json, devices/<kind>.schema.json, storage/<class>.schema.json
-# or services/<class>.schema.json — anything else (dotted paths, traversal attempts) is
-# skipped rather than resolved against the filesystem
-_PLUGIN_NAME = compile(r"[A-Za-z_][A-Za-z0-9_]*")
+# A protocol/kind/class value is turned into a path — connectors/<protocol>.schema.json,
+# devices/<kind>.schema.json, algorithms/<class>.schema.json, storage/<class>.schema.json
+# or services/<class>.schema.json — so it must be a dotted chain of plain module names and
+# nothing else. A third-party plugin lives at <axis>/<vendor>/<name>.py and names itself
+# "<vendor>.<name>" in config, which is why the dot is allowed; each segment still has to
+# be a Python identifier.
+#
+# This is the **only** traversal guard there is. `files(package).joinpath()` performs no
+# containment check of its own, so '../etc/passwd' escapes the package directory and an
+# absolute name escapes entirely. Keep `.fullmatch`: with `.match` the trailing `*` would
+# accept 'evil/../x' by matching only its leading 'evil'. The rejected shapes are worth
+# naming, because each is a real config typo or a real attempt: '../etc/passwd', 'a/b',
+# '/abs', '.hidden', 'a..b' and 'a.' all fail.
+#
+# The *import* path needs no such guard — `import_module` raises ModuleNotFoundError for
+# every hostile name, which the loader already treats as a clean per-entry skip.
+_PLUGIN_NAME = compile(r"[A-Za-z_][A-Za-z0-9_]*(?:\.[A-Za-z_][A-Za-z0-9_]*)*")
 
 # Config loads before main() configures logging; this bootstrap handler uses the same
 # format so early warnings render identically — see `config/log_format.py`. warn()/error()
@@ -39,7 +52,6 @@ class Config(metaclass=Singleton):
 	See `config.schema.json` for the schema; per-protocol connector options are
 	validated against `connectors/<protocol>.schema.json` shipped with each connector
 	"""
-	DEFAULT_VERSION: str = "0.0.0"
 	DEFAULT_ENV: Environment = Environment.PROD
 	DEFAULT_LOGGER_LEVEL: dict[Environment, LoggerLevel] = {
 		Environment.DEV: LoggerLevel.DEBUG,
@@ -60,7 +72,7 @@ class Config(metaclass=Singleton):
 		"max_backoff_seconds": 60
 	}
 
-	VERSION: str
+	VERSION: Optional[str]
 	ENV: Environment
 	LOGGER_LEVEL: LoggerLevel
 	CONNECTORS: list[dict[str, Any]]
@@ -87,18 +99,36 @@ class Config(metaclass=Singleton):
 			Config.warn(f"Found {len(errors)} errors in config file")
 			for error in errors:
 				Config.warn(error)
+		# Read from the RAW config, before `_interpolate()` below. A document's format version
+		# is a property of the document, not of the machine reading it, so `${VAR}` in it is a
+		# mistake rather than a feature — and reading it raw turns that mistake into a warning
+		# naming the template instead of a mysterious null. It also makes `Config.version` hold
+		# exactly the bytes in the file, which is what `motrix-edge-view`'s topology.ts reads
+		# from the same file and never interpolates.
+		#
+		# `and declared` folds the empty string in with absence, matching topology.ts's
+		# `stringOrNull` (`value !== ''`): the two repositories then report the identical value
+		# for the identical file in every case, which is the property that lets one of them
+		# cite the other. The raw value — not this normalised one — is what is judged, so a
+		# `version` of another JSON type is reported as unreadable rather than as unsaid.
+		declared_version = config.get("version")
+		self.VERSION = declared_version if isinstance(declared_version, str) and declared_version else None
+		self._report_config_format(declared_version)
 		self._plugin_schemas: dict[tuple[str, str], Optional[dict]] = {}
 		self._validate_plugin_options(config.get("connectors", []), "connectors", "protocol", "Connector")
 		self._validate_plugin_options(config.get("devices", []), "devices", "kind", "Device")
 		self._validate_plugin_options(config.get("storage", []), "storage", "class", "Storage")
 		self._validate_plugin_options(config.get("services", []), "services", "class", "Service")
+		# Algorithms are the fifth axis, and were the one with no options validation at all.
+		# They are also the axis a contributor is most likely to write, and the one whose
+		# options (`required_devices`, `delay_seconds`, `wait_for_devices_timeout`) most need
+		# a declared contract: the base class reads them, so a typo in one was silently
+		# ignored rather than warned about.
+		self._validate_plugin_options(config.get("algorithms", []), "algorithms", "class", "Algorithm")
 		# Resolve ${VAR} env references after validating the raw template: the templates
 		# are valid strings under the schema, whereas an interpolated optional credential
 		# may resolve to null — validating first avoids spurious "not of type string" warnings
 		config = self._interpolate(config)
-		self.VERSION = config.get("version", self.DEFAULT_VERSION)
-		if self.VERSION != self.DEFAULT_VERSION:  # TODO: Replace with actual semver logic and potentially create config migration or smth
-			Config.warn(f"Version mismatch: '{self.VERSION}' != '{self.DEFAULT_VERSION}'")
 		self.ENV = self._get_enum(Environment, config.get("env", self.DEFAULT_ENV), self.DEFAULT_ENV)
 		self.LOGGER_LEVEL = self._get_enum(LoggerLevel, config.get("logger_level", self.DEFAULT_LOGGER_LEVEL[self.ENV]), self.DEFAULT_LOGGER_LEVEL[self.ENV])
 		# Per-key merge: an operator overriding one knob keeps the defaults for the rest
@@ -194,6 +224,72 @@ class Config(metaclass=Singleton):
 		)
 
 	@staticmethod
+	def _report_config_format(declared: Any) -> None:
+		"""Say what this build makes of the document's declared format version.
+
+		The verdict itself is `config/version.py`'s, which is pure and logs nothing; this is
+		the only place it becomes English. Split that way so a future migrator branches on
+		`Compatibility` rather than on a log line — see that module's docstring for why there
+		is no migrator yet.
+
+		Every message that is not silence ends in an action an operator can take — set the
+		key, rewrite the file, upgrade the build. This loader emits genuinely broken wiring
+		into the same channel at the same levels, before logging is even configured, so a
+		line that only reports a difference spends an operator's attention without buying
+		them anything. A verdict for which no action can be named has not earned a message,
+		which is most of why `UNDECLARED` and `COMPATIBLE` say nothing at all.
+
+		Nothing here raises, and nothing here is fatal — not even an incompatible major.
+		`Config` is built in `Main.__init__`, before `main()`'s `try/finally`, so an ERROR is
+		the loudest thing this loader can honestly do. It renders through the bootstrap
+		handler on stdout rather than through the operator's configured handler, as every
+		other `Config` diagnostic already does.
+		"""
+		match compare(declared):
+			case Compatibility.UNDECLARED:
+				# A file that claims nothing is told nothing. The key is optional in
+				# config.schema.json, and a check that contradicts the schema is a check
+				# nobody can satisfy — which is the failure this replaced.
+				pass
+			case Compatibility.UNREADABLE:
+				# Worth its own line although the schema already refused the value: the
+				# schema says the string is malformed, and only this says what it cost —
+				# that no compatibility check happened at all. When no config.schema.json
+				# is present the schema says nothing whatsoever, and this is the only line.
+				interpolated = " — '${' is not resolved in this key, because a document's format is a property of the document and not of the machine reading it" if isinstance(declared, str) and "${" in declared else ""
+				Config.warn(
+					f"Configuration version {declared!r} could not be read{interpolated}, so it was not "
+					f"checked against this build's {CONFIG_FORMAT_VERSION}. Set \"version\" to three "
+					f"numbers, or remove the key to say nothing about the format"
+				)
+			case Compatibility.COMPATIBLE:
+				pass
+			case Compatibility.FORWARD_MINOR:
+				Config.warn(
+					f"Configuration version '{declared}' is a newer minor than this build's "
+					f"{CONFIG_FORMAT_VERSION}. A minor version only ever adds, so this file is read in "
+					f"full — but anything it declares that this build's config.schema.json does not "
+					f"know is ignored without comment. Upgrade Motrix Edge, or check the file against "
+					f"the schema this build ships"
+				)
+			case Compatibility.INCOMPATIBLE_OLDER:
+				Config.error(
+					f"Configuration version '{declared}' is an older major than this build's "
+					f"{CONFIG_FORMAT_VERSION}. Across a major version a key can have been renamed or "
+					f"have changed meaning, so this file may be read wrongly rather than incompletely — "
+					f"it is being read anyway. Rewrite it against config.schema.json and set \"version\" "
+					f"to \"{CONFIG_FORMAT_VERSION}\"; there is no automatic migration"
+				)
+			case Compatibility.INCOMPATIBLE_NEWER:
+				Config.error(
+					f"Configuration version '{declared}' is a newer major than this build's "
+					f"{CONFIG_FORMAT_VERSION}. Keys this file relies on may not exist here, and keys "
+					f"that do exist may mean something else — it is being read anyway. Upgrade Motrix "
+					f"Edge to a build that declares '{declared}', or rewrite the file against the "
+					f"config.schema.json this build ships"
+				)
+
+	@staticmethod
 	def _unique_by_name(entries: list[dict[str, Any]], label: str) -> list[dict[str, Any]]:
 		"""Drop entries whose `name` was already seen, keeping the first and logging the rest."""
 		seen: set[Any] = set()
@@ -219,24 +315,31 @@ class Config(metaclass=Singleton):
 		"""Load `<package>/<name>.schema.json`, or None when the plugin ships no schema."""
 		key = (package, name)
 		if key not in self._plugin_schemas:
-			schema_file = files(package).joinpath(f"{name}.schema.json")
+			# The dot in a namespaced plugin name is a directory separator on disk:
+			# "acme.solar" is connectors/acme/solar.schema.json, never a file literally
+			# named acme.solar.schema.json, which no layout produces. This line and the
+			# `_PLUGIN_NAME` regex are one change in two places: widening the regex alone
+			# turns a silent skip into a silent *miss*, which is strictly worse — the entry
+			# would look validated and never be.
+			relative = f"{name.replace(chr(46), chr(47))}.schema.json"
+			schema_file = files(package).joinpath(relative)
 			schema: Optional[dict] = None
 			if schema_file.is_file():
 				try:
 					schema = loads(schema_file.read_text())
 				except JSONDecodeError as e:
-					Config.warn(f"Invalid JSON in plugin schema '{package}/{name}.schema.json': {e}")
+					Config.warn(f"Invalid JSON in plugin schema '{package}/{relative}': {e}")
 			else:
-				Config._logger().debug(f"No options schema for '{package}/{name}', skipping validation")
+				Config._logger().debug(f"No options schema for '{package}/{relative}', skipping validation")
 			self._plugin_schemas[key] = schema
 		return self._plugin_schemas[key]
 
 	def _validate_plugin_options(self, entries: list, package: str, key: str, label: str) -> None:
 		"""Validate each entry's options against its plugin schema — warnings only, never fatal.
 
-		One body for all four axes: they differ only in which config key names the plugin
-		(`protocol` for connectors, `kind` for devices, `class` for storage and services)
-		and in the noun used in the warnings.
+		One body for all five axes: they differ only in which config key names the plugin
+		(`protocol` for connectors, `kind` for devices, `class` for algorithms, storage and
+		services) and in the noun used in the warnings.
 		"""
 		for entry in entries:
 			if not isinstance(entry, dict):
@@ -251,7 +354,9 @@ class Config(metaclass=Singleton):
 			try:
 				validator_class.check_schema(schema)
 			except SchemaError as e:
-				Config.warn(f"Invalid {label.lower()} schema '{plugin}.schema.json': {e.message}")
+				# Same translation as `_load_plugin_schema`: name the file that exists on disk,
+				# not the one a literal reading of the config value would suggest.
+				Config.warn(f"Invalid {label.lower()} schema '{plugin.replace(chr(46), chr(47))}.schema.json': {e.message}")
 				continue
 			validator = validator_class(schema)
 			for error in validator.iter_errors(entry.get("options", {})):

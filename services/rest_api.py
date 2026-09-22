@@ -166,11 +166,12 @@ class RestApiService(Service):
 			# raised inside a supervised start(), i.e. a restart loop).
 			server.run()
 		except SystemExit as e:
-			# uvicorn calls sys.exit(1) when it cannot bind. SystemExit is a
-			# BaseException: SupervisedWorker._run catches Exception and
-			# threading.excepthook silently ignores SystemExit, so left alone this thread
-			# would die with no log line, no restart, and without ever setting _finished —
-			# a permanently unfinished worker nobody logged. Convert it to the crash it is.
+			# uvicorn calls sys.exit(1) when it cannot bind. SupervisedWorker._run now has a
+			# SystemExit branch, so left alone this would be logged CRITICAL and would set
+			# _finished — but it would *not* be restarted, because a worker that exits is
+			# treated as having given up rather than having failed. A port momentarily held
+			# by something else deserves the bounded retry a crash gets, and converting it
+			# here is the one thing that still buys it.
 			raise RuntimeError(f"REST API could not bind {self.host}:{self.port}") from e
 		finally:
 			with self._server_lock:

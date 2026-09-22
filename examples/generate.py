@@ -250,6 +250,12 @@ def verify(target: Path) -> None:
 	if readings.count(b"\r\n") == 0 or decisions.count(b"\r\n") == 0:
 		raise SystemExit("expected CRLF line terminators")
 
+	# The one file under expected/ that is not CSV, and whose terminator used to be
+	# os.linesep. LF on every platform, or check()'s byte comparison below decides
+	# drift by which machine ran it.
+	if b"\r\n" in (expected / "control.log").read_bytes():
+		raise SystemExit("control.log must use LF line terminators on every platform")
+
 
 # --- the adversarial tier -----------------------------------------------------------
 # Authored, not observed. The EMS cannot produce most of these — but a `docker kill`
@@ -342,6 +348,10 @@ def write_edge_cases() -> None:
 
 
 def write_manifest() -> None:
+	# newline="\n" for the same reason the control log passes it: text mode would
+	# hand the terminator to os.linesep, and examples/** is stored verbatim under -text,
+	# so a contributor regenerating on the other platform would rewrite every line of a
+	# file whose checksums had not changed.
 	MANIFEST.write_text(
 		json.dumps(
 			{
@@ -357,7 +367,14 @@ def write_manifest() -> None:
 		)
 		+ "\n",
 		encoding="utf-8",
+		newline="\n",
 	)
+	# Read back rather than trust the argument above. Drop it and text mode translates
+	# to os.linesep silently: nothing here byte-compares the manifest, so the first
+	# symptom is the next contributor regenerating on the other platform and getting a
+	# whole-file diff. Fail one line from the cause instead.
+	if b"\r\n" in MANIFEST.read_bytes():
+		raise SystemExit("MANIFEST.json must use LF line terminators on every platform")
 
 
 def sha256(path: Path) -> str:

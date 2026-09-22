@@ -85,13 +85,13 @@ class DevicesManager(DevicesAccess, metaclass=AbstractSingleton):
 		return SimulationClock().get_step_time()
 
 	@override
-	def control(self, device_name: str, command: str) -> None:
+	def control(self, device_name: str, command: str) -> bool:
 		with self.devices_lock:
 			device = self.devices.get(device_name)
 		if device is None:
 			self.LOGGER.warning(f"Cannot control unknown device '{device_name}'")
-			return
-		device.control(command)
+			return False
+		return device.control(command)
 
 	def remove_device(self, name: str) -> None:
 		with self.devices_lock:

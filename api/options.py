@@ -5,10 +5,11 @@ interpolated value is always a `str` — or `None` when a whole-value token reso
 So every numeric and boolean option a plugin declares can arrive as a string, and every
 one can arrive as `None`.
 
-These helpers never raise. `main.create_classes` catches only `AttributeError`,
-`ModuleNotFoundError` and `TypeError`, so a `ValueError` escaping a plugin's `__init__`
-escapes `create_classes` too and takes the whole process down over one mistyped tuning
-knob. Warn and fall back to the default instead.
+These helpers never raise. `main.create_classes` contains a raising constructor — it logs
+the traceback and skips that entry — but a skipped entry is a plugin that is simply not
+there: no reading, no actuator, and an algorithm quietly working with one device fewer.
+Losing a whole meter over one mistyped tuning knob is the wrong trade when the option has
+a perfectly good default. Warn and fall back instead.
 
 The same reasoning covers config values read outside a plugin constructor:
 `RestartPolicy.from_runtime` runs in `Main.__init__`, *before* the `try/finally` in

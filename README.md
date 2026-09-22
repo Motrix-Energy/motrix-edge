@@ -74,6 +74,15 @@ Everything is declared in `config.json` and loaded by name: `main.py` imports
 edit and no import to add — a new plugin is a new module plus a config entry, which is
 the whole point. All five recipes are in [`CONTRIBUTING.md`](CONTRIBUTING.md).
 
+A plugin does not have to live in this repository either. One at
+`<axis>/<vendor>/<name>.py`, configured as `"<vendor>.<name>"`, loads exactly the same way,
+so anyone can publish a connector or an algorithm from their own repository — by convention
+named `motrix-edge-<axis>-<name>` and tagged with the GitHub topic
+[`motrix-edge-plugin`](https://github.com/topics/motrix-edge-plugin). That topic is the whole
+discovery mechanism. See
+[Publishing a plugin outside this repository](CONTRIBUTING.md#publishing-a-plugin-outside-this-repository),
+and `SECURITY.md` before you install someone else's.
+
 ---
 
 ## The configuration is the wiring
@@ -115,6 +124,14 @@ never constructs a transport.
   load `.env`; see [`.env.example`](.env.example) for how to export it.
 - **Order is config order.** Plugins are instantiated into a list, never a set, so two
   decisions landing in the same timestep land in the same order on every run.
+- **The optional top-level `version` declares the format of *this file*, not the release
+  that reads it.** An EMS build understands one config format — `CONFIG_FORMAT_VERSION` in
+  [`config/version.py`](config/version.py), currently `1.0.0` — and compares your `version`
+  against it: an equal or older minor and any patch difference are silent, a newer minor
+  warns that keys this build does not know are being ignored, and either major mismatch is
+  an error. Omitting the key is not a claim and is never mentioned; nothing here is ever
+  fatal, and there is no automatic migration. A plugin's own options are versioned by its
+  `*.schema.json`, never by this number.
 
 ---
 

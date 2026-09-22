@@ -3,6 +3,8 @@ import os
 from datetime import datetime
 from json import loads
 
+from api.capabilities import Switch
+from devices_manager.devices_manager import DevicesManager
 from tests.conftest import StubAlgorithm, StubConnector, StubDevice, StubStorageBackend
 from storage.csv_file import CsvFileBackend
 
@@ -65,3 +67,74 @@ class TestStorageIntegration:
 
         assert len(backend.algorithm_decision_calls) == 1
         assert backend.algorithm_decision_calls[0] == ("test_algo", "relay1", "on")
+
+
+class ReadOnlySwitch(StubDevice, Switch):
+    """A read-only device that claims Switch anyway — the shape this gate exists for.
+
+    `Switch` is a class-level type claim and algorithms act on it directly:
+    `algorithms/auto_toggle.py` selects actuators with `isinstance(device, Switch)` and no
+    `is_writable` check. Deriving `is_writable` per instance cannot help, because
+    `isinstance` is class-level. That is why the shipped tree splits every writable device
+    into a `*_switch` subclass — and why a decision must be recorded only once the command
+    has actually reached a transport.
+    """
+
+    def __init__(self, name: str = "fake_relay"):
+        super().__init__(name=name, is_writable=False)
+
+
+class TestADecisionIsRecordedOnlyWhenItLands:
+    """`Algorithm.control_device` used to write the decision unconditionally.
+
+    It called `devices_manager.control(...)` and then wrote to storage regardless of what
+    came back, because `Device.control` logs and returns rather than raising when the
+    device is not writable. A read-only device claiming `Switch` therefore put one false
+    row per tick into `algorithm_decisions.csv` — the versioned contract Motrix Edge View
+    reads — describing a command no hardware ever saw.
+    """
+
+    def _algorithm_over(self, device, storage_manager):
+        backend = StubStorageBackend("test")
+        storage_manager.register(backend)
+        devices_manager = DevicesManager()
+        devices_manager.update_device(device)
+        return StubAlgorithm("test_algo", devices_manager=devices_manager, delay_seconds=1), backend
+
+    def test_a_read_only_device_claiming_switch_writes_no_row(self, storage_manager):
+        device = ReadOnlySwitch()
+        connector = StubConnector("conn1")
+        connector.inject_devices({"fake_relay": device})
+        algo, backend = self._algorithm_over(device, storage_manager)
+
+        assert algo.control_device(device, "on") is False
+        assert backend.algorithm_decision_calls == []
+
+    def test_a_device_with_no_connector_writes_no_row(self, storage_manager):
+        # Reachable without any third party: a device whose `connector_options` name a
+        # connector that failed to load is never injected, so it has no `connector`.
+        device = StubDevice(name="orphan", is_writable=True)
+        algo, backend = self._algorithm_over(device, storage_manager)
+
+        assert algo.control_device(device, "on") is False
+        assert backend.algorithm_decision_calls == []
+
+    def test_an_unknown_device_name_writes_no_row(self, storage_manager):
+        device = StubDevice(name="relay1", is_writable=True)
+        connector = StubConnector("conn1")
+        connector.inject_devices({"relay1": device})
+        algo, backend = self._algorithm_over(device, storage_manager)
+
+        stale = StubDevice(name="removed_since", is_writable=True)
+        assert algo.control_device(stale, "on") is False
+        assert backend.algorithm_decision_calls == []
+
+    def test_a_writable_device_still_writes_its_row(self, storage_manager):
+        """The gate must not cost the happy path its row."""
+        device = StubDevice(name="relay1", is_writable=True)
+        connector = StubConnector("conn1")
+        connector.inject_devices({"relay1": device})
+        algo, backend = self._algorithm_over(device, storage_manager)
+
+        assert algo.control_device(device, "on") is True
+        assert backend.algorithm_decision_calls == [("test_algo", "relay1", "on")]

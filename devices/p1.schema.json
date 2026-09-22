@@ -5,6 +5,7 @@
 	"properties": {
 		"connector_options": {
 			"type": "object",
+			"$comment": "A P1 carries a raw DSMR telegram, and the only transport that can deliver one to this device is 'mqtt' — including a 'pseudo' replay connector declaring emulates: \"mqtt\", which Config resolves before injecting. Anything else is refused with one ERROR at startup and produces no readings; devices/p1.py's UNSERVABLE_PROTOCOLS names the LoRa transports specifically; everything else falls through to its PROTOCOL_REFUSAL. `protocol` is injected by Config from the connector this device names and must not be written here.",
 			"properties": {
 				"name": {
 					"type": "string",
@@ -17,9 +18,11 @@
 			"type": "object",
 			"properties": {
 				"pattern": {
+					"$comment": "The client-side routing regex the connector matches each topic against. Required because it has no default and cannot get one: there is no standard P1-over-MQTT topic — dsmr2mqtt, Tasmota's tele/<name>/SENSOR, HomeWizard and every hand-rolled reader choose their own — so a synthesised default would not fail loudly, it would match a different meter's telegram on the same broker and file its readings under this device's name. A missing one is a load-time warning, never fatal.",
 					"type": "string"
 				},
 				"subscription": {
+					"$comment": "The MQTT topic filter, distinct from the routing regex above. Optional although MQTTConnector.inject_devices warns when it is absent, because subscriptions are a connector-wide set: a sibling device declaring a broader filter already covers a device that declares only a pattern.",
 					"oneOf": [
 						{
 							"type": "string"
@@ -36,6 +39,7 @@
 			"required": ["pattern"]
 		},
 		"controller_options": {
+			"$comment": "Inert on this kind: a P1 is a meter, is not a Switch, and is_writable is False, so Device.control refuses a command before it reaches the connector. Documented rather than removed so a reader knows the omission is the device's nature and not an oversight.",
 			"type": "object",
 			"properties": {
 				"topic": {

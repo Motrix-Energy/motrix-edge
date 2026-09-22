@@ -130,8 +130,8 @@ class LoRaWANConnector(MQTTConnector):
 	server nobody has heard of is `profile: "custom"` plus four templates.
 
 	Subclasses `MQTTConnector` rather than reimplementing it — this *is* MQTT, so the connect
-	ladder, paho's reconnect, the resubscribe-on-reconnect and the threaded fan-out are
-	already right. Exactly three things are LoRaWAN-specific: the constructor's options, how a
+	ladder, paho's reconnect, the resubscribe-on-reconnect and the bounded, order-preserving
+	per-device dispatch are already right. Exactly three things are LoRaWAN-specific: the constructor's options, how a
 	devEUI becomes a topic filter and a routing regex (`resolve_listener`), and how a Switch
 	token becomes base64 inside a vendor JSON envelope (`resolve_downlink`).
 
@@ -140,9 +140,11 @@ class LoRaWANConnector(MQTTConnector):
 	how often the node reports. Nothing in this connector can shorten that, and three
 	consequences follow that are worth stating before they are discovered:
 
-	- `Algorithm.control_device` writes the decision to `algorithm_decisions.csv` *before*
-	  `send()` is even called. That row's timestamp is when the EMS decided, never when the
-	  node acted. True of every connector; here the gap is minutes rather than milliseconds.
+	- `Algorithm.control_device` writes the decision to `algorithm_decisions.csv` as soon as
+	  `send()` has accepted the command for delivery — which here means *queued*. That row's
+	  timestamp is when the EMS decided, never when the node acted, and nothing downstream
+	  confirms it ever did. True of every connector; here the gap is minutes rather than
+	  milliseconds, so the distinction is worth stating before it is discovered.
 	- `algorithms/auto_toggle.py` re-issues its decision every tick, with no feedback that the
 	  last one landed. Unthrottled, that is one queued downlink per tick — which is what
 	  `min_downlink_interval` exists to bound.

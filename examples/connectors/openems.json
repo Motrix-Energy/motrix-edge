@@ -1,7 +1,7 @@
 {
 	"$schema": "../../config.schema.json",
 	"$comment": "Reading an OpenEMS Edge over its REST channel API and steering one writable channel. Interop rather than competition: an Edge already drives inverters, batteries and EV chargers, and this exposes all of them as EMS devices without reimplementing a driver. Needs an Edge with io.openems.edge.controller.api.rest enabled — no extra Python dependency, `requests` is already core.",
-	"version": "0.0.0",
+	"version": "1.0.0",
 	"env": "prod",
 	"logger_level": "info",
 

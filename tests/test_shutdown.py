@@ -133,12 +133,16 @@ class TestHttpApiConnectorStop:
         device = StubDevice(name="meter", listener_options={"endpoint": "/meter", "interval": 30})
         connector = HttpApiConnector(name="HTTP 1", base_url="http://api.example")
         connector.inject_devices({"meter": device})
-        connector._session = MagicMock()
-        connector._session.request.return_value = MagicMock(text="{}", status_code=200)
-        return connector, device
+        # Mocked at _build_session() rather than by assigning _session: start() builds its
+        # own session per run — so a supervisor restart never polls on the closed one — and
+        # would overwrite anything planted on the attribute beforehand.
+        session = MagicMock()
+        session.request.return_value = MagicMock(text="{}", status_code=200)
+        connector._build_session = MagicMock(return_value=session)
+        return connector, device, session
 
     def test_poll_loop_returns_on_stop(self, caplog):
-        connector, device = self._wire()
+        connector, device, _ = self._wire()
         with caplog.at_level(logging.INFO):
             thread = run_in_thread(connector.start)
             assert device.wait_until_ready(STOP_TIMEOUT)  # polled once
@@ -147,11 +151,11 @@ class TestHttpApiConnectorStop:
         assert any("Polling stopped" in r.message for r in caplog.records)
 
     def test_session_is_closed_when_the_loop_ends(self):
-        connector, device = self._wire()
+        connector, device, session = self._wire()
         thread = run_in_thread(connector.start)
         assert device.wait_until_ready(STOP_TIMEOUT)
         assert_stops(connector, thread)
-        connector._session.close.assert_called_once()
+        session.close.assert_called_once()
 
 
 class TestMqttConnectorStop:

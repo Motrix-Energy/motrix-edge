@@ -47,7 +47,10 @@ class HttpApiConnector(Connector):
 	default_interval: float
 	timeout: float
 	verify_ssl: bool
-	_session: requests.Session
+	_headers: dict[str, str]
+	_auth: Optional[HTTPBasicAuth]
+	# None outside a run: built by start(), dropped by its finally. See _build_session().
+	_session: Optional[requests.Session]
 	_poll_tasks: list[PollTask]
 	_failed_devices: set[str]
 
@@ -64,15 +67,61 @@ class HttpApiConnector(Connector):
 		self.timeout = float_option(self.LOGGER, "timeout", timeout, 30.0, minimum=0.0)
 		self.verify_ssl = bool_option(self.LOGGER, "verify_ssl", verify_ssl, True)
 
-		self._session = requests.Session()
-		if headers:
-			self._session.headers.update(headers)
-		if auth:
-			self._session.auth = HTTPBasicAuth(auth["username"], auth["password"])
-		self._session.verify = self.verify_ssl
+		# Kept rather than applied: the session they configure is built per run, in start().
+		# HTTPBasicAuth is still resolved here on purpose — a malformed `auth` block is a
+		# config error, and the KeyError it raises belongs on the main thread at startup,
+		# where it is one traceback, rather than on the supervised thread, where it would be
+		# five restarts and a CRITICAL over a typo in config.json.
+		self._headers = dict(headers) if headers else {}
+		self._auth = HTTPBasicAuth(auth["username"], auth["password"]) if auth else None
+		self._session = None
 
 		self._poll_tasks = []
 		self._failed_devices = set()
+
+	def _build_session(self) -> requests.Session:
+		"""A configured session. One per run of start(), never carried across runs.
+
+		`start()`'s finally closes the session, and `SupervisedWorker._run` re-invokes the
+		*same bound* `start()` on the *same instance* after a crash — so a session built once
+		in `__init__` left run two, and every run after it, polling through adapters whose
+		connection pools `close()` had already released. urllib3 rebuilds those pools lazily,
+		so the polls usually still succeeded: an accident of its implementation, not a
+		promise, and the only reason this was never seen in production. `modbus_tcp.py` builds
+		its client inside `start()` for the same reason, and closes it in the same finally.
+
+		A method rather than four lines inlined in `start()` so the constructor wiring —
+		headers, Basic auth, TLS verification — stays assertable without driving the loop.
+		"""
+		session = requests.Session()
+		session.headers.update(self._headers)
+		session.auth = self._auth
+		session.verify = self.verify_ssl
+		return session
+
+	def _live_session(self, device: Device, payload: str) -> Optional[requests.Session]:
+		"""The session a command may go out on, or None having warned and dropped it.
+
+		`main` constructs every worker before starting any of them, and `send()` runs on the
+		ALGORITHM's thread — so a command can arrive before `start()` has built the session,
+		and again in the gap between a crash and the supervisor's restart. Unguarded, that is
+		an AttributeError on None escaping `send()`, and nothing in `Algorithm.control_device`
+		-> `DevicesManager.control` -> `Device.control` catches it: the *algorithm's* restart
+		budget spent because a connector had not come up yet.
+
+		Dropping the command is the answer `connectors/mqtt.py` already gives for a missing
+		client, and the right one here: an algorithm re-decides every tick, so a setpoint
+		delivered late is worse than one never delivered.
+
+		On the base class rather than inline in `send()` so `connectors/openems.py`, whose
+		`send()` is an override and not a delegation, inherits the guard instead of growing
+		its own copy — it reached `self._session` directly, and an AttributeError is not one
+		of the four exception types its handlers name.
+		"""
+		session = self._session
+		if session is None:
+			self.LOGGER.warning(f"Not connected yet, dropping command '{payload}' for '{device.name}'")
+		return session
 
 	def resolve_endpoint(self, device: Device) -> Optional[str]:
 		"""The path this device is polled at, or None to skip it (having logged why).
@@ -122,6 +171,7 @@ class HttpApiConnector(Connector):
 			self.LOGGER.warning("No polling tasks configured, connector idle")
 			return
 
+		self._session = self._build_session()
 		self.on_connected()
 		self.LOGGER.info(f"Starting HTTP polling on {self.base_url} ({len(self._poll_tasks)} device(s))")
 
@@ -140,8 +190,15 @@ class HttpApiConnector(Connector):
 				self.wait_stop(max(0.0, min(idle, _MAX_SLEEP_SECONDS)))
 		finally:
 			# Closed here rather than in stop(): tearing the session down under an
-			# in-flight request from another thread is not safe
-			self._session.close()
+			# in-flight request from another thread is not safe.
+			#
+			# Dropped as well as closed, and in that order, because send() runs on an
+			# algorithm's thread that outlives this loop: leaving the closed object in place
+			# would have a command arriving between two supervised runs POST through adapters
+			# whose pools are already released. Cleared, `_live_session()` warns and drops it
+			# instead, and the next run's `_build_session()` fills the attribute back in.
+			session, self._session = self._session, None
+			session.close()
 			self.LOGGER.info("Polling stopped, HTTP session closed")
 
 	def _poll_device(self, task: PollTask) -> None:
@@ -159,10 +216,11 @@ class HttpApiConnector(Connector):
 			)
 			response.raise_for_status()
 
-			accepted = device.receive(response.text)
-			self.on_device_data_received(device, accepted)
-
-			if device.name in self._failed_devices:
+			# Gated on deliver(): a poll that reached the device but crashed inside it has
+			# recovered nothing. Announcing a fix on the exact poll that proved the device
+			# still broken — and clearing the flag, so the next failure logs as if it were the
+			# first — is worse than saying nothing.
+			if self.deliver(device, response.text) and device.name in self._failed_devices:
 				self.LOGGER.info(f"Device '{device.name}' recovered")
 				self._failed_devices.discard(device.name)
 
@@ -180,12 +238,15 @@ class HttpApiConnector(Connector):
 		if not endpoint:
 			self.LOGGER.warning(f"Device '{device.name}' has no controller_options.endpoint, cannot send")
 			return
+		session = self._live_session(device, payload)
+		if session is None:
+			return
 
 		url = f"{self.base_url}/{endpoint.lstrip('/')}"
 		method = device.controller_options.get("method", "POST").upper()
 
 		try:
-			response = self._session.request(
+			response = session.request(
 				method=method,
 				url=url,
 				data=payload,

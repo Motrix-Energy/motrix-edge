@@ -306,7 +306,10 @@ class TestDispatch:
 
         with caplog.at_level(logging.ERROR):
             assert run_session(connector, socket, lambda: second.receive.called)
-        assert any("Error handling 'sensor.grid'" in r.message for r in caplog.records)
+        # Connector.deliver owns this message now — one boundary, one wording, for every
+        # connector. It names the device and the routing key, and carries the traceback.
+        assert any("raised on 'sensor.grid'" in r.message for r in caplog.records)
+        assert any("boom" in r.message for r in caplog.records)
 
     def test_unreadable_frame_is_logged_not_fatal(self, caplog):
         connector = make_connector()

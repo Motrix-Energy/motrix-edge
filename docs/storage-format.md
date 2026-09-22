@@ -214,10 +214,13 @@ than `{name}` for exactly this reason.)
 2024-01-15T10:00:00,shelly_plug,off
 ```
 
-No header. No quoting. Written with a raw `f.write` in text mode, so its line terminator
-is **platform-translated** (CRLF on Windows, LF elsewhere) rather than the CSV files'
-guaranteed CRLF. Every JSON command contains commas, so a CSV parser mis-splits it, and a
-command containing a newline corrupts the line entirely.
+No header. No quoting. Written with a raw `f.write` terminated by **`\n` on every
+platform**: the connector passes `newline="\n"` rather than letting text mode translate
+to `os.linesep`, because `examples/auto_toggle/expected/` is compared byte-for-byte and a
+host-dependent terminator would make that comparison a statement about the runner. Note it
+is LF where the two CSVs are CRLF — this file is not CSV and does not follow RFC 4180.
+Every JSON command contains commas, so a CSV parser mis-splits it, and a command
+containing a newline corrupts the line entirely.
 
 It is a **debug log, not an interchange format**. When a `csv_file` backend is configured
 it duplicates `algorithm_decisions.csv`; when one is not, it is the only record. A

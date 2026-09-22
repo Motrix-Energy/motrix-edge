@@ -165,15 +165,16 @@ class PseudoConnector(Connector):
 						self.LOGGER.warning(f"Unknown device '{entry.device_name}' in replay file, skipping")
 						warned_devices.add(entry.device_name)
 				else:
-					# Dispatch to device
-					try:
-						if entry.topic is not None:
-							accepted = device.receive(entry.topic, entry.payload)
-						else:
-							accepted = device.receive(entry.payload)
-						self.on_device_data_received(device, accepted)
-					except Exception as e:
-						self.LOGGER.error(f"Error replaying entry for {entry.device_name}: {e}")
+					# The arity branch stays here at the call site and never moves inside
+					# deliver(): a replay row with a topic column dispatches as
+					# receive(topic, payload) and one without as receive(payload), which is the
+					# contract CONTRIBUTING.md puts on every device. Hiding that choice in a
+					# shared helper would hide the one thing this connector does differently
+					# from every other one.
+					if entry.topic is not None:
+						self.deliver(device, entry.topic, entry.payload)
+					else:
+						self.deliver(device, entry.payload)
 
 				# Commit the timestep once all of its devices are dispatched, then wait
 				# for the algorithms to finish it. Reached even for an unknown device:
@@ -216,7 +217,12 @@ class PseudoConnector(Connector):
 		self.LOGGER.info(f"[PSEUDO SEND] {device.name}: {payload}")
 		if self.control_log:
 			try:
-				with open(self.control_log, 'a', encoding='utf-8') as f:
+				# newline='\n' so the terminator belongs to this writer rather than to the
+				# host: text mode would translate it to os.linesep, and
+				# examples/auto_toggle/expected/control.log is compared byte-for-byte by
+				# tests/test_storage_contract.py on a runner that is not the machine the
+				# fixture was generated on.
+				with open(self.control_log, 'a', encoding='utf-8', newline='\n') as f:
 					sim_time = DevicesManager().get_simulation_time()
 					f.write(f"{(sim_time or datetime.now()).isoformat()},{device.name},{payload}\n")
 			except OSError as e:

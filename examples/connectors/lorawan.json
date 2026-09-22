@@ -1,7 +1,7 @@
 {
 	"$schema": "../../config.schema.json",
 	"$comment": "LoRaWAN through a network server's MQTT integration. The EMS never touches a radio here — the network server has already abstracted every gateway and every end node — so what is left varying is the topic tree, the downlink body, the uplink envelope and the payload layout, and all four are configuration. Two nodes behind ChirpStack, plus a third behind AWS IoT Core expressed as `custom` to show that a network server with no named profile costs three lines and no code. Byte offsets and field names below are invented: replace them with your node's payload documentation. Needs no extra dependency — paho-mqtt is already core.",
-	"version": "0.0.0",
+	"version": "1.0.0",
 	"env": "prod",
 	"logger_level": "info",
 

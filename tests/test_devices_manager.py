@@ -83,7 +83,7 @@ class TestDevicesManagerControl:
         connector.inject_devices({"relay1": device})  # sets device.connector
         devices_manager.update_device(device)
 
-        devices_manager.control("relay1", "on")
+        assert devices_manager.control("relay1", "on") is True
 
         connector.send.assert_called_once()
         sent_device, command = connector.send.call_args[0]
@@ -103,12 +103,13 @@ class TestDevicesManagerControl:
         assert snapshot is not device
         snapshot.controller_options["topic"] = "mutated/topic"
 
-        devices_manager.control("relay1", "on")
+        assert devices_manager.control("relay1", "on") is True
 
         sent_device = connector.send.call_args[0][0]
         assert sent_device is device
         assert sent_device.controller_options["topic"] == "live/topic"  # live value, not the snapshot mutation
 
     def test_control_unknown_device_does_not_raise(self, devices_manager):
-        # No device registered — logs a warning and no-ops.
-        devices_manager.control("nonexistent", "on")
+        # No device registered — logs a warning, no-ops, and answers False so the caller
+        # does not record a decision for a device that does not exist.
+        assert devices_manager.control("nonexistent", "on") is False

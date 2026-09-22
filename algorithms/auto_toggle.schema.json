@@ -1,0 +1,23 @@
+{
+	"$schema": "https://json-schema.org/draft/2020-12/schema",
+	"$comment": "Options for the auto_toggle algorithm. AutoToggle.__init__ forwards **kwargs straight to Algorithm.__init__, so the three keys below are the whole options contract for every algorithm — they are read by the base class, not by this module. The lockstep check in tests/test_config.py follows **kwargs up the MRO for exactly this reason; without that walk an algorithm could declare nothing at all. 'devices_manager' is injected by main through create_classes(arguments=...) and is deliberately absent: declaring it here would let a config entry collide with the injected value and fail instantiation with 'got multiple values'. Every scalar also accepts 'string' and 'null': Config validates this schema BEFORE resolving ${VAR}, and an interpolated value is always a str, or null when a whole-value token resolves empty. 'required' is deliberately absent for the same reason — a '${VAR}' template would satisfy it and still arrive as null. No 'minimum' either: it would constrain only the number branch and silently pass '-1'; range checks live in api/options.py, which api/algorithm.py routes all three through. Second reader: motrix-edge-view's src/core/topology.ts reads these same three keys out of config.json to draw the site, so widening any of them is a change in two repositories.",
+	"type": "object",
+	"properties": {
+		"delay_seconds": {
+			"$comment": "Wall-clock cadence between main() calls, default 900. Ignored under a replay: a replay connector drives the clock and steps the algorithm once per committed timestep, in lockstep, so the same algorithm backtests and runs live unchanged. 0 is legal and means 'as fast as the loop allows'.",
+			"type": ["number", "string", "null"]
+		},
+		"required_devices": {
+			"$comment": "Device names to wait for — ready and connected — before the first main(). A readiness gate only: selection inside main() stays capability-based, so this never turns into a second, name-shaped way of choosing devices. Declared without a 'string' branch, unlike the scalars: a '${VAR}' template cannot express a list, so writing one here earns a warning at load time rather than silently arriving as a string and being dropped.",
+			"type": ["array", "null"],
+			"items": {
+				"type": "string"
+			}
+		},
+		"wait_for_devices_timeout": {
+			"$comment": "Seconds to wait for each required device, default 60. null means wait forever, which is why this option is not defaulted through the usual coercion — null here is a value, not an absence. An unset '${VAR}' interpolates to null too and is therefore also read as 'wait forever'; the two are indistinguishable by the time they reach the constructor, so prefer a literal number unless you mean it.",
+			"type": ["number", "string", "null"]
+		}
+	},
+	"additionalProperties": false
+}

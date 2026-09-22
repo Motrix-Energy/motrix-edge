@@ -10,12 +10,12 @@ class ModbusSwitch(ModbusMeter, Switch):
 	A separate kind rather than a flag on `ModbusMeter`, because `Switch` is a *type* claim
 	that algorithms act on directly and cannot be made conditional per instance:
 	`algorithms/auto_toggle.py` selects actuators with `isinstance(device, Switch) and
-	device.data`, with no `is_writable` check — and `Algorithm.control_device` writes the
-	decision to storage *before* `Device.control` gets to refuse a non-writable device. A
-	read-only meter subclassing `Switch` would therefore put a row in
-	`algorithm_decisions.csv` claiming an algorithm switched a revenue meter on, every
-	tick: a wrong entry in the versioned storage contract, not merely a noisy log.
-	Splitting the class is what keeps the `isinstance` check honest.
+	device.data`, with no `is_writable` check. A read-only revenue meter subclassing `Switch` is
+	therefore selected as an actuator and commanded on every tick. `Device.control` refuses each
+	command and `Algorithm.control_device` records nothing when it does, so `algorithm_decisions.csv`
+	stays honest — but the algorithm still believes it holds an actuator, and goes on asking a device
+	that can never move to close a coil. The gate in `control_device` protects the versioned storage
+	contract; splitting the class is what stops the algorithm making that mistake in the first place.
 
 	It inherits `ModbusMeter`'s parsing because a device that both meters and switches is
 	the common case — a smart breaker, an inverter with a power setpoint — and a coil

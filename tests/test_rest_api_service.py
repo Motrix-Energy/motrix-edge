@@ -164,8 +164,8 @@ class TestConstruction:
         assert make_service(docs=value).docs is expected
 
     def test_an_unparsable_port_warns_and_falls_back(self, caplog):
-        """create_classes only catches TypeError/AttributeError/ModuleNotFoundError, so a
-        ValueError out of __init__ would take the whole EMS down for an optional service.
+        """A ValueError out of __init__ is contained by create_classes, but the service is
+        then skipped and the API simply is not there — no error at the port, just nothing.
         Same rule as InfluxDBBackend's option helpers: warn, then default."""
         with caplog.at_level(logging.WARNING):
             service = make_service(port="not-a-port")
@@ -849,10 +849,11 @@ class TestServiceLifecycle:
         assert "not binding" in caplog.text
 
     def test_a_port_already_in_use_is_a_crash_not_a_silent_exit(self):
-        """uvicorn calls sys.exit(1) when it cannot bind. SystemExit is a BaseException, so
-        SupervisedWorker._run's `except Exception` misses it: the thread would die with no
-        ERROR, no restart, and without ever reaching _finished.set() — a permanently
-        unfinished worker nobody logged. Converting it puts it back under supervision."""
+        """uvicorn calls sys.exit(1) when it cannot bind. The supervisor now logs a
+        SystemExit and finishes the worker, but deliberately does not restart it — a
+        worker that exits is treated as having given up. A port that is momentarily held
+        by something else deserves the retry a crash gets, so converting it to a
+        RuntimeError is what still buys the restart."""
         hog = socket.socket()
         hog.bind(("127.0.0.1", 0))
         hog.listen()

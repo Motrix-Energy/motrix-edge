@@ -13,8 +13,11 @@
 # with it.
 examples/** -text
 
-# The pseudo connector's control log is written in text mode without newline="", so its
-# terminator really is platform-dependent. Store what was produced.
+# The pseudo connector's control log. Already covered by the rule above — it is under
+# examples/ — but named because it is one of the two generated files that are LF rather
+# than CRLF (MANIFEST.json is the other; both writers pass newline="\n"), and -text
+# is what stops a Windows checkout with core.autocrlf turning those LFs into CRLFs in
+# the working tree and failing the byte comparison there.
 examples/auto_toggle/expected/control.log -text
 
 # Brand assets are bytes. The PNG is binary either way; naming it here keeps the rule

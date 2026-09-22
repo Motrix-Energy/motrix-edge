@@ -76,7 +76,7 @@ class TestPseudoIntegration:
         connector.start()
 
         # Now control the device — this should log via connector
-        plug.control("turn_on")
+        assert plug.control("turn_on") is True
 
         content = control_log.read_text()
         assert "plug,turn_on" in content
@@ -138,17 +138,34 @@ class TestEmulatedProtocol:
         }
 
     def test_without_emulates_the_device_refuses_the_payload(self, tmp_path, devices_manager, caplog):
-        """The failure this option exists to remove: a device sees protocol "pseudo",
-        finds no branch for it, and the replay logs it as a bad entry."""
+        """The failure this option exists to remove: a device sees protocol "pseudo", finds
+        no branch for it, and refuses every row.
+
+        The refusal is now stated once at construction, on the main thread, rather than
+        discovered per row on the connector's. It used to reach the log only because
+        `P1.receive` raised `NotImplementedError` and `PseudoConnector.start` caught it as
+        "Error replaying entry" — which said a replay entry was bad when the entry was fine
+        and the wiring was not, and which said nothing at all behind a connector whose
+        dispatch has no `except`.
+        """
         csv_file = tmp_path / "replay.csv"
         write_csv_quoted(csv_file, [("2024-01-15T10:00:00", "meter", "p1/data", "anything")])
 
-        meter = self._p1("pseudo")  # what Config injects with no `emulates`
+        with caplog.at_level(logging.ERROR):
+            meter = self._p1("pseudo")  # what Config injects with no `emulates`
+        startup_errors = [r.message for r in caplog.records if r.levelname == "ERROR"]
+        assert len(startup_errors) == 1
+        assert "emulates" in startup_errors[0], "the message must name the key that fixes it"
+
         connector = PseudoConnector("c", replay_file=str(csv_file), speed=0)
         connector.inject_devices({"meter": meter})
 
+        caplog.clear()
         with caplog.at_level(logging.ERROR):
             connector.start()
 
         assert meter.data == {}
-        assert "Error replaying entry" in caplog.text
+        assert "Error replaying entry" not in caplog.text, (
+            "the replay file is fine; blaming the entry sent operators to the wrong file"
+        )
+        assert [r for r in caplog.records if r.levelname == "ERROR"] == []

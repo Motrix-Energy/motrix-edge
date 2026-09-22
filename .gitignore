@@ -25,3 +25,15 @@ __pycache__/
 .venv/
 .pytest_cache/
 .ruff_cache/
+
+# A plugin from someone else's repository is vendored into an axis directory, and it is
+# the operator's, not ours: `git status` stays clean and `git pull` never conflicts with
+# it. Anchored and directory-only, like the rules above — no shipped axis has a
+# sub-directory, so these match nothing in this tree today and everything an operator
+# adds. (`__pycache__/` above already covers the axis caches; this simply also does.)
+# A fork that genuinely wants to commit a vendored plugin uses `git add -f`.
+/connectors/*/
+/devices/*/
+/algorithms/*/
+/storage/*/
+/services/*/

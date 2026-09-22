@@ -55,6 +55,15 @@ class ModbusMeter(Device, EnergyMeter, MetricSource):
 	_registers: dict[str, RegisterSpec]
 	_energy_import_names: list[str]
 
+	SUPPORTED_PROTOCOLS = ("modbus_tcp",)
+
+	# No UNSERVABLE_PROTOCOLS table: there is no near-miss transport worth a sentence of its
+	# own here. Everything this could be misconfigured onto is refused for the reason below.
+	PROTOCOL_REFUSAL = (
+		"a Modbus meter is polled by connectors/modbus_tcp.py, which serialises the register "
+		"words to JSON itself — no other transport produces that payload"
+	)
+
 	@override
 	def __init__(self, name: str, connector_options: dict[str, Any], listener_options: dict[str, Any], controller_options: dict[str, Any]) -> None:
 		super().__init__(name, connector_options, listener_options, controller_options)
@@ -67,9 +76,9 @@ class ModbusMeter(Device, EnergyMeter, MetricSource):
 	def _build_specs(self) -> None:
 		"""Resolve the declared register map once, warning about anything unusable.
 
-		Never raises: main.create_classes catches only AttributeError/ModuleNotFoundError/
-		TypeError, so anything else escaping a plugin constructor takes the whole process
-		down. A malformed entry is dropped with a warning; the rest of the meter still works.
+		Never raises: a constructor that throws is contained by main.create_classes, but the
+		containment costs the whole device — one bad entry in the map and nothing here
+		reports at all. A malformed entry is dropped with a warning; the rest of the meter still works.
 		"""
 		default_order = str(self.listener_options.get("word_order", "big")).strip().lower()
 		if default_order not in ("big", "little"):
@@ -142,23 +151,19 @@ class ModbusMeter(Device, EnergyMeter, MetricSource):
 
 	@override
 	def receive(self, *args, **kwargs) -> Optional[bool]:
-		match self.connector_options["protocol"]:
-			case "modbus_tcp":
-				# Tolerate the (topic, payload) arity as well as (payload,). The live
-				# connector always sends one argument, but a replay CSV row whose `topic`
-				# column is non-empty makes PseudoConnector call with two — and the
-				# resulting TypeError is swallowed by the replay's own except handler, so
-				# the backtest would silently produce nothing at all.
-				if len(args) == 2:
-					self.LOGGER.debug(f"Ignoring topic '{args[0]}' on {self.name}: modbus_tcp payloads carry no topic")
-				if not args:
-					self.LOGGER.warning(f"Empty receive() call on {self.name}")
-					return False
-				return self.receive_modbus_tcp(args[-1])
-			case _:
-				self.LOGGER.error(f"Unknown protocol {self.connector_options['protocol']} for {self.name}")
-				self.LOGGER.debug(f"{self.connector_options=}, {args=}, {kwargs=}")
-				raise NotImplementedError(f"Protocol {self.connector_options['protocol']} not implemented for {self.name}")
+		if self.refuse_unserved_protocol(*args, **kwargs):
+			return False
+		# Tolerate the (topic, payload) arity as well as (payload,). The live connector always
+		# sends one argument, but a replay CSV row whose `topic` column is non-empty makes
+		# PseudoConnector call with two — so a device that accepted only one shape would raise
+		# TypeError on every such row. `Connector.deliver` catches that now and logs one
+		# traceback against this device, but it is still a backtest that produces no readings.
+		if len(args) == 2:
+			self.LOGGER.debug(f"Ignoring topic '{args[0]}' on {self.name}: modbus_tcp payloads carry no topic")
+		if not args:
+			self.LOGGER.warning(f"Empty receive() call on {self.name}")
+			return False
+		return self.receive_modbus_tcp(args[-1])
 
 	def receive_modbus_tcp(self, payload: str) -> bool:
 		"""Decode `{"blocks": {name: [words...]}}` into `self.data`.

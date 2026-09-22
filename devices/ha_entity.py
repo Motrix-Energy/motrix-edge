@@ -52,6 +52,24 @@ class HaEntity(Device, MetricSource, EnergyMeter):
 	`state_text` is always a string, so neither key ever changes type.
 	"""
 
+	SUPPORTED_PROTOCOLS = ("home_assistant",)
+
+	PROTOCOL_REFUSAL = (
+		"a Home Assistant reading is a state object from the Core websocket API, which "
+		"reaches a device over 'home_assistant'"
+	)
+
+	UNSERVABLE_PROTOCOLS = {
+		# Home Assistant *does* speak MQTT, which is what makes this worth a sentence of its
+		# own rather than the generic one. Its statestream integration publishes each entity's
+		# state as a bare string on its own topic, so a device wired that way would be handed
+		# "23.4" where receive_home_assistant needs the state *object* — the one carrying
+		# `attributes` and `last_updated`, which only the websocket API produces. It would
+		# fail to parse on every message and look like a broken sensor rather than a wiring
+		# mistake.
+		"mqtt": "Home Assistant's MQTT statestream publishes each entity's state as a bare string on its own topic; this device parses the state *object* (with `attributes` and `last_updated`), which only the websocket API produces",
+	}
+
 	@override
 	def __init__(self, name: str, connector_options: dict[str, Any], listener_options: dict[str, Any], controller_options: dict[str, Any]) -> None:
 		super().__init__(name, connector_options, listener_options, controller_options)
@@ -60,20 +78,16 @@ class HaEntity(Device, MetricSource, EnergyMeter):
 
 	@override
 	def receive(self, *args, **kwargs) -> Optional[bool]:
-		match self.connector_options["protocol"]:
-			case "home_assistant":
-				if len(args) == 2:
-					return self.receive_home_assistant(args[0], args[1])
-				if len(args) == 1:
-					# A replay row with an empty topic column. The state object carries its
-					# own entity_id, so this is still usable.
-					return self.receive_home_assistant(None, args[0])
-				self.LOGGER.warning(f"Unexpected receive args on {self.name}: {args!r}")
-				return False
-			case _:
-				self.LOGGER.error(f"Unknown protocol {self.connector_options['protocol']} for {self.name}")
-				self.LOGGER.debug(f"{self.connector_options=}, {args=}, {kwargs=}")
-				raise NotImplementedError(f"Protocol {self.connector_options['protocol']} not implemented for {self.name}")
+		if self.refuse_unserved_protocol(*args, **kwargs):
+			return False
+		if len(args) == 2:
+			return self.receive_home_assistant(args[0], args[1])
+		if len(args) == 1:
+			# A replay row with an empty topic column. The state object carries its
+			# own entity_id, so this is still usable.
+			return self.receive_home_assistant(None, args[0])
+		self.LOGGER.warning(f"Unexpected receive args on {self.name}: {args!r}")
+		return False
 
 	def receive_home_assistant(self, entity_id: Optional[str], payload: str) -> bool:
 		"""Parse one Home Assistant state object into `self.data`.

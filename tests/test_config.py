@@ -1,15 +1,48 @@
 import glob
-import importlib
-import inspect
 import json
+import logging
 import os
+import sys
 
 import pytest
-from jsonschema import validators
 
 from __metaclasses.singleton import Singleton
+from api import conformance
+from api.algorithm import Algorithm
+from api.connector import Connector
+from api.device import Device
+from api.service import Service
+from api.storage_backend import StorageBackend
 from config.config import Config
 from config.enums.environment import Environment
+from config.version import CONFIG_FORMAT_VERSION, Compatibility, compare, parse
+
+
+# One minimal, dependency-free config entry per axis for the load check below. Each is
+# the shipped plugin that needs no optional extra and no network: `pseudo` on three axes,
+# and the two algorithms, which need only an injected DevicesManager.
+SHIPPED_ENTRY = {
+    "connectors": (
+        {"name": "pseudo_1", "protocol": "pseudo", "options": {"replay_file": "nonexistent.csv"}},
+        "protocol", Connector, None,
+    ),
+    "devices": (
+        {"name": "dev_1", "kind": "pseudo", "options": {
+            "connector_options": {"name": "c1", "protocol": "pseudo"},
+            "listener_options": {}, "controller_options": {},
+        }},
+        "kind", Device, None,
+    ),
+    "storage": ({"name": "null_1", "class": "null", "options": {}}, "class", StorageBackend, None),
+    "services": (
+        {"name": "api_1", "class": "rest_api", "options": {}}, "class", Service,
+        {"devices_manager": None, "supervisor": None},
+    ),
+    "algorithms": (
+        {"name": "checker_1", "class": "device_checker", "options": {}}, "class", Algorithm,
+        {"devices_manager": None},
+    ),
+}
 
 
 def _write_config(tmp_path, config_dict):
@@ -19,33 +52,18 @@ def _write_config(tmp_path, config_dict):
     return str(config_file)
 
 
-def _import_plugin_module(package: str, stem: str):
-    """Import `<package>/<stem>.py`, or None when only an optional dependency is missing.
-
-    A plugin may import a library core requirements do not ship — services/rest_api.py
-    imports fastapi (see requirements-api.txt), and a future Home Assistant connector
-    would import websockets. On a machine without it the lockstep check simply cannot run,
-    and failing would turn every contributor's suite red over a dependency that is
-    optional by design.
-
-    A schema naming a module that does not exist is a different thing entirely — it is the
-    drift this whole check exists to catch — so only the first case is tolerated.
-    `ModuleNotFoundError.name` is what tells them apart, and getting that comparison
-    backwards would leave the test green while checking nothing: it is shared across the
-    four axis classes rather than copy-pasted for exactly that reason.
-    """
-    try:
-        return importlib.import_module(f"{package}.{stem}")
-    except ModuleNotFoundError as missing:
-        if missing.name == f"{package}.{stem}":
-            raise
-        return None
+# `_import_plugin_module` moved to api/conformance.py, where a plugin in its own
+# repository can reach it. It also gained the prefix discrimination the local copy
+# lacked: with a dotted package (connectors.acme.solar), a missing connectors/acme/
+# raised with name == 'connectors.acme', which is not equal to the target and was
+# waved through as 'optional dependency absent'.
+_import_plugin_module = conformance.import_plugin_module
 
 
 @pytest.fixture
 def valid_config():
     return {
-        "version": "0.0.0",
+        "version": "1.0.0",
         "env": "dev",
         "logger_level": "debug",
         "connectors": [
@@ -81,7 +99,7 @@ class TestConfigLoading:
         path = _write_config(tmp_path, valid_config)
         cfg = Config(file_path=path)
 
-        assert cfg.version == "0.0.0"
+        assert cfg.version == "1.0.0"
         assert cfg.env == Environment.DEV
         assert len(cfg.connectors) == 1
         assert cfg.connectors[0]["name"] == "mqtt_1"
@@ -91,7 +109,11 @@ class TestConfigLoading:
     def test_missing_config_file(self, tmp_path):
         cfg = Config(file_path=str(tmp_path / "nonexistent.json"))
 
-        assert cfg.version == "0.0.0"
+        # A file that does not exist declares nothing, and absence is not a claim —
+        # see config/version.py. This used to read "0.0.0", the value the deleted
+        # DEFAULT_VERSION put there, which made a silent file indistinguishable from
+        # one that had spelled out a version.
+        assert cfg.version is None
         assert cfg.env == Environment.PROD
         assert cfg.connectors == []
         assert cfg.algorithms == []
@@ -406,10 +428,13 @@ class TestControllerOptionsSchema:
 class TestUnresolvablePluginNames:
     """What every axis does with a plugin name it cannot turn into a schema file.
 
-    Both rules are axis-independent, so they are stated once here rather than four times:
-    a name with no schema gets no options validation (the same trust model algorithms
-    have, and a typo still fails loudly later in `create_classes`), and a name that is
-    not a plain module name must never reach the filesystem at all.
+    Both rules are axis-independent, so they are stated once here rather than five times:
+    a name with no schema file gets no options validation (a typo still fails loudly
+    later in `create_classes`), and a name that is not a dotted chain of plain module
+    names must never reach the filesystem at all.
+
+    All five axes now, including algorithms — which used to be the example of the first
+    rule, being the one axis that shipped no schemas at all.
 
     The entry survives Config either way — skipping validation is not rejection.
     """
@@ -420,6 +445,7 @@ class TestUnresolvablePluginNames:
         pytest.param("devices", "kind", {"connector_options": {"name": "c"}}, id="devices"),
         pytest.param("storage", "class", {}, id="storage"),
         pytest.param("services", "class", {}, id="services"),
+        pytest.param("algorithms", "class", {}, id="algorithms"),
     ]
 
     @staticmethod
@@ -440,11 +466,89 @@ class TestUnresolvablePluginNames:
         assert len(getattr(cfg, axis)) == 1
 
     @pytest.mark.parametrize("axis,key,extra", AXES)
-    def test_traversal_in_a_plugin_name_never_reaches_the_filesystem(self, tmp_path, caplog, axis, key, extra):
-        config = self._config(axis, key, "../evil", dict(extra))
+    @pytest.mark.parametrize("hostile", ["../evil", "a/b", "/abs", ".hidden", "a..b", "a.", ".a"])
+    def test_traversal_in_a_plugin_name_never_reaches_the_filesystem(self, tmp_path, caplog, axis, key, extra, hostile):
+        """`files(package).joinpath()` performs no containment check, so the regex is the
+        only guard there is. Widening it to allow the dot in `vendor.name` widened exactly
+        one thing: every shape below must still be refused before it becomes a path."""
+        config = self._config(axis, key, hostile, dict(extra))
         cfg = Config(file_path=_write_config(tmp_path, config))
         assert "invalid options" not in caplog.text
         assert len(getattr(cfg, axis)) == 1
+
+    @pytest.mark.parametrize("axis,key,extra", AXES)
+    def test_a_namespaced_name_with_no_schema_is_silent(self, tmp_path, caplog, axis, key, extra):
+        """A dotted name is a legal plugin name now, not a traversal attempt. With no
+        schema file behind it the entry is simply unvalidated, exactly as an unknown plain
+        name is — not warned about, and certainly not rejected."""
+        config = self._config(axis, key, "acme.solar", {**extra, "anything": True})
+        cfg = Config(file_path=_write_config(tmp_path, config))
+        assert "invalid options" not in caplog.text
+        assert len(getattr(cfg, axis)) == 1
+
+
+class TestANamespacedPluginIsValidated:
+    """The two-line fix, end to end: a dotted name resolves to a nested schema file.
+
+    Both halves or neither. Widening `_PLUGIN_NAME` alone lets `acme.solar` through the
+    guard and then looks for a file literally named `acme.solar.schema.json`, which no
+    layout produces — turning a silent skip into a silent *miss*, where the entry looks
+    validated and never is. This is the test that would have caught that.
+
+    Driven through a temporary importable package rather than a vendor directory inside
+    `connectors/`, so the repository is never written to: `_validate_plugin_options` takes
+    the package name as an argument, and `importlib.resources.files` resolves it the same
+    way whatever it is called.
+    """
+
+    SCHEMA = {
+        "$schema": "https://json-schema.org/draft/2020-12/schema",
+        "type": "object",
+        "properties": {"host": {"type": "string"}},
+        "additionalProperties": False,
+    }
+
+    @pytest.fixture
+    def vendor_package(self, tmp_path):
+        package = tmp_path / "vendorhost"
+        (package / "acme").mkdir(parents=True)
+        (package / "__init__.py").write_text("")
+        (package / "acme" / "__init__.py").write_text("")
+        (package / "acme" / "solar.schema.json").write_text(json.dumps(self.SCHEMA))
+        sys.path.insert(0, str(tmp_path))
+        try:
+            yield "vendorhost"
+        finally:
+            sys.path.remove(str(tmp_path))
+            for name in [m for m in sys.modules if m == "vendorhost" or m.startswith("vendorhost.")]:
+                del sys.modules[name]
+
+    @staticmethod
+    def _config(tmp_path):
+        return Config(file_path=_write_config(tmp_path, {"connectors": []}))
+
+    def test_a_dotted_name_finds_its_nested_schema_and_warns_about_a_bad_option(self, tmp_path, vendor_package, caplog):
+        cfg = self._config(tmp_path)
+        entry = {"name": "roof", "protocol": "acme.solar", "options": {"nonsense": 1}}
+        with caplog.at_level(logging.WARNING):
+            cfg._validate_plugin_options([entry], vendor_package, "protocol", "Connector")
+        assert "Connector 'roof' (protocol 'acme.solar'): invalid options" in caplog.text
+        assert "nonsense" in caplog.text
+
+    def test_a_dotted_name_with_valid_options_is_silent(self, tmp_path, vendor_package, caplog):
+        cfg = self._config(tmp_path)
+        entry = {"name": "roof", "protocol": "acme.solar", "options": {"host": "10.0.0.7"}}
+        with caplog.at_level(logging.WARNING):
+            cfg._validate_plugin_options([entry], vendor_package, "protocol", "Connector")
+        assert "invalid options" not in caplog.text
+
+    def test_the_literal_dotted_filename_is_never_looked_for(self, tmp_path, vendor_package):
+        """`acme.solar` means acme/solar.schema.json. A file actually named
+        acme.solar.schema.json is not the contract and must not resolve, or the two layouts
+        would both half-work and an author could not tell which one they were relying on."""
+        cfg = self._config(tmp_path)
+        assert cfg._load_plugin_schema(vendor_package, "acme.solar") == self.SCHEMA
+        assert cfg._load_plugin_schema(vendor_package, "acme.missing") is None
 
 
 class TestConnectorPluginSchemas:
@@ -551,81 +655,79 @@ class TestDevicePluginSchemas:
 class TestShippedSchemas:
     """Contract tests over the shipped */*.schema.json files themselves.
 
-    One parametrized class for all four axes: the four copies differed only in the
-    directory to glob and the suffix in the expected class name.
+    A thin caller over `api/conformance.py`, deliberately. The checks live there so a
+    plugin in its own repository can run them, and this class is what keeps the two from
+    drifting: if the kit breaks, this repository's pytest goes red.
+
+    The axis list is the parametrisation; everything else is one call and one assertion.
     """
+
+    ROOT = os.path.dirname(os.path.dirname(__file__))
 
     AXES = [
         pytest.param("connectors", "connector", id="connectors"),
         pytest.param("devices", "", id="devices"),
         pytest.param("storage", "backend", id="storage"),
         pytest.param("services", "service", id="services"),
+        pytest.param("algorithms", "", id="algorithms"),
     ]
 
-    @staticmethod
-    def _schema_files(package: str):
-        directory = os.path.join(os.path.dirname(os.path.dirname(__file__)), package)
-        paths = sorted(glob.glob(os.path.join(directory, "*.schema.json")))
-        assert paths, f"no {package} schema files found"
-        return paths
+    @classmethod
+    def _directory(cls, package: str) -> str:
+        return conformance.axis_directory(cls.ROOT, package)
 
     @pytest.mark.parametrize("package,suffix", AXES)
     def test_every_schema_is_valid_json_schema(self, package, suffix):
-        for schema_path in self._schema_files(package):
-            with open(schema_path) as f:
-                schema = json.load(f)
-            validators.validator_for(schema).check_schema(schema)
+        report = conformance.check_schemas_are_valid(self._directory(package))
+        assert report.checked, f"no {package} schema files found"
+        assert report.ok, report.describe()
 
     @pytest.mark.parametrize("package,suffix", AXES)
     def test_schema_matches_constructor_signature(self, package, suffix):
-        """The kwargs contract: config options are spread into the constructor, so every
-        key a schema allows (and everything it requires) must be a constructor parameter.
-        This automates the "keep schema and constructor in lockstep" discipline.
-
-        Devices are the interesting case: every device shares Device.__init__, so their
-        schemas' top-level keys must be a subset of the three option sub-dicts. Services
-        are the other one — `devices_manager`/`supervisor` are real constructor parameters
-        injected by main, so the subset direction still holds.
+        """The kwargs contract, in both directions — see `check_kwargs_lockstep`.
 
         A plugin whose module needs an uninstalled optional dependency is skipped rather
-        than failed; if that leaves nothing checked at all, the test reports itself as
-        skipped instead of going green having verified nothing.
+        than failed. If that leaves nothing checked, the test says so rather than going
+        green having verified nothing — and it distinguishes that from an empty or
+        misnamed directory, which is a broken test rather than an absent extra.
         """
-        checked = 0
-        for schema_path in self._schema_files(package):
-            with open(schema_path) as f:
-                schema = json.load(f)
-            stem = os.path.basename(schema_path).removesuffix(".schema.json")
-            module = _import_plugin_module(package, stem)
-            if module is None:
-                continue
-            checked += 1
-            expected_class_name = f"{stem}{suffix}".replace("_", "")
-            cls = next(
-                obj for name, obj in vars(module).items()
-                if isinstance(obj, type) and name.lower() == expected_class_name
-            )
-            params = set(inspect.signature(cls.__init__).parameters) - {"self", "name"}
-            schema_keys = set(schema.get("properties", {}))
-            assert schema_keys <= params, f"{stem}: schema allows options the constructor rejects: {schema_keys - params}"
-            required = set(schema.get("required", []))
-            assert required <= params, f"{stem}: schema requires options the constructor lacks: {required - params}"
-        if not checked:
+        report = conformance.check_kwargs_lockstep(self._directory(package), package, suffix)
+        assert report.ok, report.describe()
+        assert report.checked or report.skipped, f"no {package} schema files found"
+        if not report.checked:
             pytest.skip(f"every {package} module needs an optional dependency that is not installed")
 
-    def test_no_service_schema_declares_an_injected_handle(self):
-        # Services only: devices_manager/supervisor are spread by
-        # create_classes(arguments=...). A schema declaring one would let a config entry
-        # collide with the injected value and fail instantiation with "got multiple
-        # values" — which the subset check above cannot catch, since both are genuine
-        # constructor parameters.
-        for schema_path in self._schema_files("services"):
-            with open(schema_path) as f:
-                schema = json.load(f)
-            declared = set(schema.get("properties", {}))
-            assert not declared & {"devices_manager", "supervisor"},                 f"{schema_path}: injected handles must not be config options"
+    @pytest.mark.parametrize("package,suffix", AXES)
+    def test_no_schema_declares_an_injected_handle(self, package, suffix):
+        """`devices_manager` and `supervisor` are spread by create_classes(arguments=...).
 
+        A schema declaring one lets a config entry collide with the injected value and fail
+        instantiation with "got multiple values" — which the subset check cannot catch,
+        since both are genuine constructor parameters. Parametrised over every axis now,
+        not services only: algorithms receive `devices_manager` too, and the map in
+        `api/conformance.py` is per-axis so a connector parameter that happened to be
+        named `supervisor` is not quietly excused.
+        """
+        report = conformance.check_injected_handles_absent(self._directory(package), package)
+        assert report.checked, f"no {package} schema files found"
+        assert report.ok, report.describe()
 
+    @pytest.mark.parametrize("package,suffix", AXES)
+    def test_one_entry_of_every_axis_actually_loads(self, package, suffix):
+        """The naming rule and the issubclass gate had no test at all.
+
+        A plugin can satisfy every schema check here and still be rejected at startup,
+        because `create_classes` matches the class by name and then gates on the axis ABC.
+        This drives the real loader, which is also what proves `conformance.expected_class`
+        still agrees with `main`.
+        """
+        entry, class_key, base, arguments = SHIPPED_ENTRY[package]
+        report = conformance.check_loads(
+            entry, class_key, package, base,
+            expected_name_suffix=suffix or None, arguments=arguments,
+        )
+        assert report.ok, report.describe()
+        assert report.created == (entry["name"],)
 
 
 class TestStoragePluginSchemas:
@@ -725,7 +827,7 @@ class TestServicePluginSchemas:
         assert list(cfg._plugin_schemas.keys()) == [("services", "rest_api")]
 
     def test_services_default_to_empty(self, tmp_path):
-        cfg = Config(file_path=_write_config(tmp_path, {"version": "0.0.0"}))
+        cfg = Config(file_path=_write_config(tmp_path, {"version": "1.0.0"}))
         assert cfg.services == []
 
 
@@ -808,3 +910,165 @@ class TestShippedExampleConfigs:
             missing = [r.message for r in caplog.records if "not found for device" in str(r.message)]
             assert not missing, f"{os.path.relpath(path, self.EXAMPLES)}: {missing}"
             assert len(config.devices) == len(config.DEVICES), "a device was dropped during wiring"
+
+
+class TestConfigFormatVersion:
+    """`config.json`'s `version`, which declares the format the document was written against.
+
+    Two tiers, the way tests/test_storage_contract.py and tests/test_storage_csv.py split:
+    the pure verdict first, then what an operator actually sees through `Config`. The pure
+    tier is what keeps the migration seam honest — `config/version.py` computes a verdict
+    and logs nothing, so a future migrator can branch on the same value.
+    """
+
+    # --- the pure function -------------------------------------------------------------
+
+    @pytest.mark.parametrize("text,expected", [
+        ("1.0.0", (1, 0, 0)),
+        ("10.20.30", (10, 20, 30)),
+        ("01.0.0", (1, 0, 0)),  # the EMS pattern accepts leading zeros, so this does too
+    ])
+    def test_parse_reads_three_integer_components(self, text, expected):
+        assert parse(text) == expected
+
+    @pytest.mark.parametrize("value", [
+        "1.0", "1.0.0.0", "v1.0.0", "1.0.0-rc1", "1.0.0+build", " 1.0.0", "1.0.0 ",
+        "", "not-semver", "${EMS_CFG_VER}", None, 1.0, {}, [],
+        # Non-ASCII decimal digits. Python's \d matches these and ECMA-262's does not, so
+        # accepting them would put this parser outside both config.schema.json (a JSON
+        # Schema pattern, therefore ECMA-262) and the viewer reading the same bytes.
+        "٢.٠.٠", "２.0.0",
+    ])
+    def test_parse_refuses_anything_else_without_raising(self, value):
+        assert parse(value) is None
+
+    def test_parse_refuses_a_component_too_long_to_be_an_int(self):
+        # config.schema.json bounds nothing but the shape, so a 4301-digit component is
+        # schema-valid — and int() raises ValueError above sys.get_int_max_str_digits().
+        # A raise out of Config.__init__ has no shutdown path (Main.__init__ runs before
+        # main()'s try/finally), so the parser's own pattern is what prevents it.
+        assert parse("1" * 4400 + ".0.0") is None
+
+    def test_the_build_constant_is_readable_by_its_own_grammar(self):
+        assert parse(CONFIG_FORMAT_VERSION) is not None
+
+    @pytest.mark.parametrize("declared,expected", [
+        (None, Compatibility.UNDECLARED),
+        ("", Compatibility.UNDECLARED),
+        ("1.0.0", Compatibility.COMPATIBLE),
+        ("1.0.9", Compatibility.COMPATIBLE),  # patch, either direction
+        ("1.0", Compatibility.UNREADABLE),
+        (1.0, Compatibility.UNREADABLE),  # present, just not a string
+        ("2.0.0", Compatibility.INCOMPATIBLE_NEWER),
+        ("0.9.0", Compatibility.INCOMPATIBLE_OLDER),
+        ("1.9.0", Compatibility.FORWARD_MINOR),
+    ])
+    def test_compare_returns_a_verdict_and_logs_nothing(self, declared, expected, caplog):
+        with caplog.at_level("DEBUG"):
+            assert compare(declared) is expected
+        assert caplog.records == [], "the verdict is pure; the message belongs to Config"
+
+    # --- what an operator sees ---------------------------------------------------------
+
+    @staticmethod
+    def _version_records(caplog):
+        """Only the records this feature emits, not the schema's complaint about the same key."""
+        return [str(r.message) for r in caplog.records if str(r.message).startswith("Configuration version")]
+
+    @pytest.mark.parametrize("config", [
+        {},                    # no key at all
+        {"version": None},     # explicit null
+        {"version": ""},       # empty string, which topology.ts also folds in with absence
+        {"version": "1.0.0"},  # exactly this build's format
+        {"version": "1.0.7"},  # a patch difference
+        {"version": "1.0.0", "env": "dev"},
+    ])
+    def test_a_file_this_build_understands_is_never_mentioned(self, tmp_path, caplog, config):
+        with caplog.at_level("DEBUG"):
+            Config(file_path=_write_config(tmp_path, config))
+        assert self._version_records(caplog) == []
+
+    def test_an_absent_version_reads_as_none_rather_than_a_default(self, tmp_path):
+        # The bug this replaced: DEFAULT_VERSION was both "assumed when absent" and
+        # "compared against", so a file that said nothing claimed 0.0.0 and passed while a
+        # file that declared its format honestly was warned about.
+        assert Config(file_path=_write_config(tmp_path, {"env": "dev"})).version is None
+
+    def test_an_empty_version_reads_as_none_so_both_repositories_agree(self, tmp_path):
+        # motrix-edge-view's stringOrNull is `typeof value === 'string' && value !== ''`,
+        # so the viewer reports null for this file. Config must report the same.
+        assert Config(file_path=_write_config(tmp_path, {"version": ""})).version is None
+
+    def test_a_newer_minor_warns_and_says_what_gets_ignored(self, tmp_path, caplog):
+        with caplog.at_level("DEBUG"):
+            Config(file_path=_write_config(tmp_path, {"version": "1.9.0"}))
+        records = self._version_records(caplog)
+        assert len(records) == 1
+        assert "ignored without comment" in records[0]
+        assert "Upgrade Motrix Edge" in records[0], "a message that names no action buys nothing"
+
+    @pytest.mark.parametrize("declared", ["0.9.0", "2.0.0"])
+    def test_a_major_mismatch_is_an_error_naming_both_versions_and_an_action(self, tmp_path, caplog, declared):
+        with caplog.at_level("DEBUG"):
+            Config(file_path=_write_config(tmp_path, {"version": declared}))
+        errors = [r for r in caplog.records if r.levelname == "ERROR" and str(r.message).startswith("Configuration version")]
+        assert len(errors) == 1
+        message = str(errors[0].message)
+        assert declared in message and CONFIG_FORMAT_VERSION in message
+        assert "Upgrade Motrix Edge" in message or "Rewrite it" in message
+
+    def test_a_major_mismatch_never_raises_and_the_rest_of_the_config_still_loads(self, tmp_path, valid_config):
+        # Config is built in Main.__init__, before main()'s try/finally, so an incompatible
+        # document cannot be fatal — there is no shutdown path to raise into.
+        cfg = Config(file_path=_write_config(tmp_path, {**valid_config, "version": "9.0.0"}))
+        assert len(cfg.connectors) == 1
+        assert len(cfg.devices) == 1
+
+    def test_an_unreadable_version_warns_once_and_makes_no_comparison(self, tmp_path, caplog):
+        with caplog.at_level("DEBUG"):
+            Config(file_path=_write_config(tmp_path, {"version": "not-semver"}))
+        records = self._version_records(caplog)
+        assert len(records) == 1
+        assert "was not checked" in records[0]
+
+    def test_a_template_is_named_as_a_template_rather_than_silently_unread(self, tmp_path, caplog, monkeypatch):
+        # `version` is read from the raw config, before _interpolate(), so this stays the
+        # literal template even with the variable set — a document's format is a property
+        # of the document, not of the machine reading it.
+        monkeypatch.setenv("EMS_CFG_VER", "2.0.0")
+        with caplog.at_level("DEBUG"):
+            cfg = Config(file_path=_write_config(tmp_path, {"version": "${EMS_CFG_VER}"}))
+        assert cfg.version == "${EMS_CFG_VER}"
+        records = self._version_records(caplog)
+        assert len(records) == 1
+        assert "${" in records[0]
+        assert not [r for r in caplog.records if r.levelname == "ERROR" and str(r.message).startswith("Configuration version")], (
+            "reading the raw value must not let an environment variable decide the verdict"
+        )
+
+    # --- lockstep ----------------------------------------------------------------------
+
+    def test_the_schema_comment_names_the_version_this_build_understands(self):
+        # A bump that moves the constant and forgets the schema prose fails here rather
+        # than at an operator's desk. Same role as
+        # tests/test_storage_contract.py::TestGoldenFixture::test_version_lockstep.
+        schema_path = os.path.join(os.path.dirname(os.path.dirname(__file__)), "config.schema.json")
+        with open(schema_path, encoding="utf-8") as handle:
+            schema = json.load(handle)
+        comment = schema["properties"]["version"]["$comment"]
+        assert f'"{CONFIG_FORMAT_VERSION}"' in comment, (
+            f"config.schema.json's version.$comment does not name {CONFIG_FORMAT_VERSION}"
+        )
+
+    def test_no_shipped_example_declares_a_version_this_build_complains_about(self, caplog):
+        # The regression test for the defect itself. examples/auto_toggle/config.json has
+        # been tripping the old check on every quickstart, and the sibling tests in
+        # TestShippedExampleConfigs filter for "invalid options" and "not found for device",
+        # so neither of them ever noticed.
+        for path in TestShippedExampleConfigs._config_files():
+            Singleton._instances.clear()
+            caplog.clear()
+            with caplog.at_level("DEBUG"):
+                Config(file_path=path)
+            offending = self._version_records(caplog)
+            assert not offending, f"{os.path.basename(path)}: {offending}"

@@ -55,10 +55,23 @@ class TestWireFormat:
         with caplog.at_level(logging.WARNING):
             assert meter.receive() is False
 
-    def test_unknown_protocol_raises(self):
+    def test_an_unserved_protocol_is_refused_rather_than_raised(self):
         meter = make_meter(protocol="carrier_pigeon")
-        with pytest.raises(NotImplementedError):
-            meter.receive(blocks(voltage_v=[1]))
+        assert meter.receive(blocks(voltage_v=[1])) is False
+        assert meter.data == {}
+
+    def test_the_refusal_is_reported_once_at_construction(self, caplog):
+        with caplog.at_level(logging.ERROR):
+            meter = make_meter(protocol="carrier_pigeon")
+        errors = [r for r in caplog.records if r.levelname == "ERROR"]
+        assert len(errors) == 1
+        assert "carrier_pigeon" in errors[0].message
+
+        caplog.clear()
+        with caplog.at_level(logging.ERROR):
+            for _ in range(5):
+                meter.receive(blocks(voltage_v=[1]))
+        assert [r for r in caplog.records if r.levelname == "ERROR"] == []
 
 
 class TestDecoding:
@@ -229,8 +242,9 @@ class TestEnergyCapability:
 
 
 class TestRegisterMapValidation:
-    """A malformed map must never raise out of the constructor: create_classes catches
-    only AttributeError/ModuleNotFoundError/TypeError, so anything else kills the process."""
+    """A malformed map must never raise out of the constructor: main.create_classes would
+    contain it, but the meter would then be skipped entirely rather than reporting the
+    registers it could still read."""
 
     def test_unknown_data_type_falls_back_to_uint16(self, caplog):
         with caplog.at_level(logging.WARNING):
@@ -279,9 +293,9 @@ class TestModbusSwitch:
         assert switch.is_writable is True
 
     def test_the_read_only_meter_is_not_a_switch(self):
-        """Load-bearing: Algorithm.control_device writes the decision to storage BEFORE
-        Device.control refuses a non-writable device, so a read-only meter subclassing
-        Switch would put a false row in algorithm_decisions.csv on every tick."""
+        """Load-bearing, and the reasoning lives in devices/modbus_switch.py: `Switch` is a
+        class-level type claim, so a read-only class inheriting it is selected as an actuator
+        by every algorithm that looks for one."""
         assert not isinstance(make_meter(), Switch)
         assert make_meter().is_writable is False
 

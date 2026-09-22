@@ -51,9 +51,30 @@ class TestResponseShapes:
         device = make_device()
         assert device.receive("ignored/topic", json.dumps(channel("ess0/Soc", 63))) is True
 
-    def test_unknown_protocol_raises(self):
-        with pytest.raises(NotImplementedError):
-            make_device(protocol="carrier_pigeon").receive("{}")
+    def test_an_unserved_protocol_is_refused_rather_than_raised(self):
+        device = make_device(protocol="carrier_pigeon")
+        assert device.receive("{}") is False
+        assert device.data == {}
+
+    def test_the_refusal_is_reported_once_at_construction(self, caplog):
+        with caplog.at_level(logging.ERROR):
+            device = make_device(protocol="carrier_pigeon")
+        errors = [r for r in caplog.records if r.levelname == "ERROR"]
+        assert len(errors) == 1
+        assert "carrier_pigeon" in errors[0].message
+
+        caplog.clear()
+        with caplog.at_level(logging.ERROR):
+            for _ in range(5):
+                device.receive("{}")
+        assert [r for r in caplog.records if r.levelname == "ERROR"] == []
+
+    def test_http_api_is_refused_with_the_subclass_reason(self, caplog):
+        # connectors/openems.py subclasses the HTTP one, so pointing http_api at the Edge
+        # looks like it should work. It builds no /rest/channel path and sends no auth.
+        with caplog.at_level(logging.ERROR):
+            make_device(protocol="http_api")
+        assert any("/rest/channel" in r.message for r in caplog.records)
 
 
 class TestGapContract:
@@ -184,9 +205,9 @@ class TestOpenemsSwitch:
         assert switch.is_writable is True
 
     def test_the_read_only_view_is_not_a_switch(self):
-        """Load-bearing: Algorithm.control_device writes the decision to storage BEFORE
-        Device.control refuses a non-writable device, so a read-only `_sum` view
-        subclassing Switch would put a false row in algorithm_decisions.csv on every tick."""
+        """Load-bearing, and the reasoning lives in devices/openems_switch.py: `Switch` is a
+        class-level type claim, so a read-only class inheriting it is selected as an actuator
+        by every algorithm that looks for one."""
         assert not isinstance(make_device(), Switch)
         assert make_device().is_writable is False
 

@@ -39,6 +39,6 @@ class Pseudo(Device):
 		return True
 
 	@override
-	def control(self, command: str) -> None:
+	def control(self, command: str) -> bool:
 		self.LOGGER.info(f"[PSEUDO CONTROL] {command}")
-		super().control(command)
+		return super().control(command)

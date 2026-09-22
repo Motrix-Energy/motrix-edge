@@ -1,7 +1,7 @@
 {
 	"$schema": "../../config.schema.json",
 	"$comment": "Reading a Home Assistant energy sensor and actuating a switch, over the HA WebSocket API. HA_TOKEN is a long-lived access token carrying the FULL permissions of the user that created it — create a dedicated non-admin HA user for the EMS. Needs `pip install -r requirements-homeassistant.txt`.",
-	"version": "0.0.0",
+	"version": "1.0.0",
 	"env": "prod",
 	"logger_level": "info",
 

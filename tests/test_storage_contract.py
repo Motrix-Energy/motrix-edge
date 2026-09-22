@@ -284,6 +284,18 @@ class TestGoldenFixture:
 			actual = hashlib.sha256((EXAMPLES / name).read_bytes()).hexdigest()
 			assert actual == digest, f"{name} does not match MANIFEST.json. {DRIFT_MESSAGE}"
 
+	def test_manifest_terminator_is_lf_on_every_platform(self):
+		"""Nothing else compares these bytes. check()'s drift list covers TRACKED, which
+		excludes the manifest, and the test above parses it as JSON — universal newlines
+		hide the terminator from both, which is how an os.linesep one went unnoticed.
+		examples/** is -text, so git stores whatever was written, and a platform flip is a
+		diff on every line of a file whose checksums did not move."""
+		raw = (EXAMPLES / "MANIFEST.json").read_bytes()
+		assert b"\r\n" not in raw, (
+			"MANIFEST.json must use LF line terminators on every platform; "
+			"write_manifest() in examples/generate.py passes newline='\\n' for this"
+		)
+
 	def test_version_lockstep(self):
 		manifest = json.loads((EXAMPLES / "MANIFEST.json").read_text(encoding="utf-8"))
 		assert manifest["storage_format_version"] == STORAGE_FORMAT_VERSION

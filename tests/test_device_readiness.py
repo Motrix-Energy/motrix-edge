@@ -58,13 +58,13 @@ class TestDeviceReadiness:
         connector.send = MagicMock()
         device.connector = connector
 
-        device.control("on")
+        assert device.control("on") is True
         connector.send.assert_called_once_with(device, "on")
 
     def test_control_without_connector(self, make_device):
         device = make_device(name="orphan", is_writable=True)
-        # Should not raise, just log warning
-        device.control("on")
+        # Should not raise: warns, answers False, and writes no decision upstream.
+        assert device.control("on") is False
 
     def test_control_non_writable_never_reaches_connector(self, make_device, make_connector):
         # F-7: Device.control() enforces is_writable — read-only devices
@@ -74,7 +74,7 @@ class TestDeviceReadiness:
         connector.send = MagicMock()
         device.connector = connector
 
-        device.control("on")
+        assert device.control("on") is False
         connector.send.assert_not_called()
 
 

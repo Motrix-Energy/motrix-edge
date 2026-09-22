@@ -10,7 +10,7 @@ from unittest.mock import MagicMock, patch
 
 from connectors.lorawan import LoRaWANConnector
 from connectors.mqtt import MQTTConnector
-from tests.conftest import StubDevice
+from tests.conftest import StubDevice, wait_until
 
 
 def make_connector(**kwargs) -> LoRaWANConnector:
@@ -409,6 +409,22 @@ class TestInheritedBehaviour:
         connector.stop()
         connector.mqtt_client.disconnect.assert_called_once()
         assert connector.is_stopping()
+
+    def test_an_uplink_routes_through_the_inherited_dispatcher(self):
+        """The bounded per-device dispatch is inherited verbatim, and a network server is
+        exactly where an unbounded one bites: a retained-message flush after a reconnect
+        replays every node's last uplink at once."""
+        connector = make_connector(application_id="app")
+        device = make_device()
+        connector.inject_devices({"meter": device})
+        device.receive = MagicMock(return_value=True)
+        topic = "application/app/device/70b3d57ed0001234/event/up"
+        try:
+            connector.on_message(None, None, MagicMock(topic=topic, payload=b"{}"))
+            assert wait_until(lambda: device.receive.call_count == 1)
+            device.receive.assert_called_once_with(topic, "{}")
+        finally:
+            connector.stop()
 
     def test_send_publishes_the_synthesised_topic_and_body(self):
         connector = make_connector(application_id="app")

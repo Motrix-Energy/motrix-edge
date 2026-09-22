@@ -1,7 +1,7 @@
 {
 	"$schema": "../../config.schema.json",
 	"$comment": "A Modbus TCP meter and a relay behind one gateway. The register map lives here rather than in code, which is what lets one device class cover many meter models — Modbus standardises the framing and standardises nothing about what lives at which address. Addresses below are ZERO-BASED protocol addresses, not 4xxxx data-model numbers, and they are invented: replace them with your meter's. Needs `pip install -r requirements-modbus.txt`.",
-	"version": "0.0.0",
+	"version": "1.0.0",
 	"env": "prod",
 	"logger_level": "info",
 

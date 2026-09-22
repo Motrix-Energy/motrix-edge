@@ -1,9 +1,10 @@
 import json
 import logging
 from time import time
-from unittest.mock import MagicMock
+from unittest.mock import MagicMock, patch
 
 from connectors.pseudo import PseudoConnector
+from simulation.clock import SimulationClock
 from tests.conftest import StubDevice, write_replay as write_csv
 
 
@@ -122,6 +123,46 @@ class TestErrorHandling:
         connector.start()  # Should not raise
 
 
+class TestARaisingDevice:
+    def test_a_raising_device_does_not_end_the_session(self, tmp_path, caplog):
+        csv_file = tmp_path / "replay.csv"
+        write_csv(csv_file, [
+            ("2024-01-15T10:00:00", "broken", "t", "p1"),
+            ("2024-01-15T10:00:01", "fine", "t", "p2"),
+        ])
+        broken, fine = make_stub_device("broken"), make_stub_device("fine")
+        broken.receive = MagicMock(side_effect=ValueError("bad payload"))
+        connector = PseudoConnector("test", replay_file=str(csv_file), speed=0)
+        connector.inject_devices({"broken": broken, "fine": fine})
+
+        with caplog.at_level(logging.ERROR):
+            connector.start()  # must not raise
+
+        fine.receive.assert_called_once_with("t", "p2")
+        assert any("raised on 't'" in r.message for r in caplog.records)
+        # The replay file is fine; blaming the entry sent operators to the wrong file.
+        assert not any("Error replaying entry" in r.message for r in caplog.records)
+
+    def test_a_raising_device_still_commits_the_timestep(self, tmp_path):
+        """Pseudo-specific, and no other connector has this failure.
+
+        `clock.publish_step` and `_await_algorithms` run *after* the dispatch, so before the
+        guard an escape there skipped the commit and stalled every algorithm on the barrier
+        for the rest of the replay.
+        """
+        csv_file = tmp_path / "replay.csv"
+        write_csv(csv_file, [("2024-01-15T10:00:00", "broken", "t", "p1")])
+        broken = make_stub_device("broken")
+        broken.receive = MagicMock(side_effect=ValueError("bad payload"))
+        connector = PseudoConnector("test", replay_file=str(csv_file), speed=0)
+        connector.inject_devices({"broken": broken})
+
+        with patch.object(SimulationClock, "publish_step") as publish:
+            connector.start()
+
+        publish.assert_called_once()
+
+
 class TestMixedTimestampShapes:
     """A replay may mix naive and offset-aware timestamps: `datetime.fromisoformat`
     accepts both, and the EMS's own output does exactly this at the head and tail of a
@@ -217,6 +258,20 @@ class TestSend:
         assert len(lines) == 2
         assert "dev_a,turn_on" in lines[0]
         assert "dev_a,turn_off" in lines[1]
+
+    def test_control_log_terminator_is_lf_on_every_platform(self, tmp_path):
+        """The test above reads with read_text(), whose universal-newline translation
+        leaves it blind to the terminator — which is how an os.linesep one reached CI.
+        tests/test_storage_contract.py catches that only on a host other than the one
+        the fixture was generated on; this catches it everywhere."""
+        log_file = tmp_path / "control.log"
+        connector = PseudoConnector("test", replay_file="dummy.csv", speed=0, control_log=str(log_file))
+
+        connector.send(make_stub_device("dev_a"), "turn_on")
+
+        raw = log_file.read_bytes()
+        assert raw.endswith(b"turn_on\n")
+        assert b"\r\n" not in raw
 
 
 class TestOnConnected:

@@ -56,7 +56,9 @@ class TestConstruction:
         """The Edge ignores the username and authenticates on the password, which is a
         user ROLE: guest | user | owner | admin."""
         connector = make_connector(password="admin")
-        assert connector._session.auth == HTTPBasicAuth("x", "admin")
+        # Read off the built session, not connector._session: the parent builds one per run
+        # of start(), so a restart never polls on the session its finally closed.
+        assert connector._build_session().auth == HTTPBasicAuth("x", "admin")
 
     def test_it_is_an_http_api_connector(self):
         assert isinstance(make_connector(), HttpApiConnector)
@@ -190,6 +192,19 @@ class TestSend:
         connector = self._connector()
         connector.send(self._writable(component="ctrl0", channel="Mode"), "MANUAL_ON")
         assert connector._session.post.call_args.kwargs["json"] == {"value": "MANUAL_ON"}
+
+    def test_send_before_start_warns_and_drops_the_command(self, caplog):
+        """This override reads the session itself, and the parent now leaves it None outside
+        a run of start() — an AttributeError on None, which is not one of the four types the
+        handlers here name, so it escaped onto the algorithm's thread. The guard is
+        HttpApiConnector._live_session(), inherited rather than copied."""
+        connector = make_connector()
+        assert connector._session is None
+
+        with caplog.at_level(logging.WARNING):
+            connector.send(self._writable(component="ess0", channel="SetActivePowerEquals"), "on")  # must not raise
+
+        assert any("Not connected yet" in r.message and "ess" in r.message for r in caplog.records)
 
     def test_missing_routing_warns_and_posts_nothing(self, caplog):
         connector = self._connector()

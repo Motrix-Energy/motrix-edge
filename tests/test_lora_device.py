@@ -387,8 +387,8 @@ class TestFailureModes:
         assert node.get_metrics() == {"ok": 0}
 
     def test_a_bad_field_map_never_raises(self):
-        """main.create_classes catches only AttributeError/ModuleNotFoundError/TypeError, so
-        anything else escaping a constructor takes the whole process down."""
+        """A constructor that raises is contained by main.create_classes, but containment
+        costs the whole node: the entry is skipped and nothing here reports at all."""
         node = make_node(fields="not a list")
         assert node.receive(CHIRPSTACK_UPLINK) is False
 
@@ -496,9 +496,31 @@ class TestDispatch:
         against any network server, with no profile and no LoRaWANConnector."""
         assert make_node(protocol="mqtt").receive(CHIRPSTACK_UPLINK) is True
 
-    def test_an_unknown_protocol_raises(self):
-        with pytest.raises(NotImplementedError):
-            make_node(protocol="zigbee").receive(CHIRPSTACK_UPLINK)
+    def test_an_unserved_protocol_is_refused_rather_than_raised(self):
+        device = make_node(protocol="zigbee")
+        assert device.receive(CHIRPSTACK_UPLINK) is False
+        assert device.data == {}
+
+    def test_the_refusal_is_reported_once_at_construction(self, caplog):
+        with caplog.at_level(logging.ERROR):
+            device = make_node(protocol="zigbee")
+        errors = [r for r in caplog.records if r.levelname == "ERROR"]
+        assert len(errors) == 1
+        assert "zigbee" in errors[0].message
+
+        caplog.clear()
+        with caplog.at_level(logging.ERROR):
+            for _ in range(5):
+                device.receive(CHIRPSTACK_UPLINK)
+        assert [r for r in caplog.records if r.levelname == "ERROR"] == []
+
+    @pytest.mark.parametrize("protocol", ["lorawan", "lora", "mqtt"])
+    def test_every_declared_protocol_is_served(self, protocol, caplog):
+        # Three labels out of one handler — the case no derivation from method names could
+        # produce, and the reason the declaration exists.
+        with caplog.at_level(logging.ERROR):
+            make_node(protocol=protocol)
+        assert [r for r in caplog.records if r.levelname == "ERROR"] == []
 
     def test_an_empty_call_is_a_gap_not_a_crash(self, caplog):
         with caplog.at_level(logging.WARNING):
@@ -566,12 +588,15 @@ class TestLoRaSwitch:
 
     def test_it_is_a_switch_and_writable(self):
         switch = self._switch()
-        assert isinstance(switch, Switch) and switch.is_writable is True
+        assert isinstance(switch, Switch)
+        assert switch.is_writable is True
 
     def test_the_read_device_is_not_a_switch(self):
-        """Switch is a type claim algorithms act on with no is_writable check, so a read-only
-        node subclassing it would put a false row in algorithm_decisions.csv every tick."""
+        """Load-bearing, and the reasoning lives in devices/lora_switch.py: `Switch` is a
+        class-level type claim, so a read-only class inheriting it is selected as an actuator
+        by every algorithm that looks for one."""
         assert not isinstance(make_node(), Switch)
+        assert make_node().is_writable is False
 
     def test_it_inherits_the_decoding(self):
         switch = self._switch()

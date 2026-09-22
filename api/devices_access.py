@@ -51,5 +51,12 @@ class DevicesAccess(ABC):
 		pass
 
 	@abstractmethod
-	def control(self, device_name: str, command: str) -> None:
+	def control(self, device_name: str, command: str) -> bool:
+		"""Route a command to the named live device. True if it reached a transport.
+		
+		False means the command went nowhere — an unknown name, a device that is not
+		writable, a device with no connector — never that the hardware refused it, which
+		is past this seam and invisible from here. `Algorithm.control_device` gates the
+		decision it writes to storage on this answer.
+		"""
 		pass

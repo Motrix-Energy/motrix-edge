@@ -266,13 +266,11 @@ class LoRaConnector(Connector):
 			return
 		body = dumps(frame)
 		for device in targets:
-			try:
-				accepted = device.receive(body)
-				self.on_device_data_received(device, accepted)
-			except Exception as e:
-				# One device's parser must not end the session for every other device on this
-				# radio, and an escape here would land on the supervised start() thread.
-				self.LOGGER.error(f"Device '{device.name}' failed on a frame: {e}", exc_info=True)
+			# Guard, traceback and rate limit now come from `Connector.deliver`. Its docstring
+			# carries what this comment used to: one device's parser must not end the session
+			# for every other device on this radio, and an escape here lands on the supervised
+			# start() thread.
+			self.deliver(device, body)
 
 	def _route(self, frame: dict[str, Any], payload_hex: str) -> list[Device]:
 		matched: list[Device] = []

@@ -79,7 +79,8 @@ class TestOptions:
 
     def test_no_client_is_built_in_the_constructor(self):
         """A stop() before start() must have nothing to tear down, and a constructor that
-        can raise escapes create_classes, which catches only three exception types."""
+        can raise loses the whole connector at load time — every device behind it goes
+        dark for the run — instead of failing one poll and being restarted."""
         assert make_connector()._client is None
 
 
@@ -328,6 +329,45 @@ class TestPollDevice:
         device.receive = MagicMock()
         self._poll(connector, device)
         device.receive.assert_not_called()
+
+
+class TestARaisingDevice:
+    """A device bug must not spend this connector's restart budget.
+
+    This is the most direct device-bug-to-EMS-shutdown path in the tree: the receive call
+    sits outside every try in _poll_device, start() wraps the loop in try/finally with no
+    except, so an escape reaches SupervisedWorker._run, and five restarts later main reads
+    `is_finished()` and shuts the whole EMS down.
+    """
+
+    def _poll(self, connector, device):
+        connector.inject_devices({device.name: device})
+        connector._poll_device(connector._poll_tasks[0])
+
+    def _broken(self):
+        connector = make_connector()
+        connector._client = MagicMock()
+        connector._client.read_holding_registers.return_value = _ok(registers=[0, 1234])
+        device = make_device(registers=[{"name": "energy", "address": 0, "data_type": "UINT32"}])
+        device.receive = MagicMock(side_effect=ValueError("bad payload"))
+        return connector, device
+
+    def test_a_raising_device_does_not_end_the_session(self, caplog):
+        connector, device = self._broken()
+        with caplog.at_level(logging.ERROR):
+            self._poll(connector, device)  # must not raise
+        assert any("raised on a payload" in r.message for r in caplog.records)
+
+    def test_a_raising_device_is_not_logged_as_recovered(self, caplog):
+        # The regression deliver()'s return value exists to prevent: a poll that reached the
+        # device and crashed inside it has recovered nothing, and clearing _failed_devices
+        # would make the next failure log as if it were the first.
+        connector, device = self._broken()
+        connector._failed_devices.add(device.name)
+        with caplog.at_level(logging.INFO):
+            self._poll(connector, device)
+        assert not any("recovered" in r.message for r in caplog.records)
+        assert device.name in connector._failed_devices
 
 
 class TestSend:

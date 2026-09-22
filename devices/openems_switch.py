@@ -10,11 +10,13 @@ class OpenemsSwitch(Openems, Switch):
 	A separate kind rather than a flag on `Openems`, because `Switch` is a *type* claim
 	that algorithms act on directly and cannot be made conditional per instance:
 	`algorithms/auto_toggle.py` selects actuators with `isinstance(device, Switch) and
-	device.data`, with no `is_writable` check — and `Algorithm.control_device` writes the
-	decision to storage *before* `Device.control` gets to refuse a non-writable device. A
-	read-only `_sum` view subclassing `Switch` would therefore put a row in
-	`algorithm_decisions.csv` claiming an algorithm switched an aggregate on, every tick:
-	a wrong entry in the versioned storage contract, not merely a noisy log.
+	device.data`, with no `is_writable` check. A read-only `_sum` view subclassing `Switch` is
+	therefore selected as an actuator and commanded on every tick. `Device.control` refuses each
+	command and `Algorithm.control_device` records nothing when it does, so `algorithm_decisions.csv`
+	stays honest — but the algorithm still believes it holds an actuator, and goes on asking a device
+	that can never move to accept a setpoint. The gate in `control_device` protects the versioned
+	storage contract; splitting the class is what stops the algorithm making that mistake in the
+	first place.
 
 	It inherits all of `Openems`'s parsing, because readable-and-writable is the common
 	case here — `ess0` is both, and splitting it into two config entries pointing at one

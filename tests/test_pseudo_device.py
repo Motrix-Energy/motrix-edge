@@ -50,6 +50,6 @@ class TestPseudoDeviceControl:
         mock_connector = MagicMock()
         device.connector = mock_connector
 
-        device.control("turn_off")
+        assert device.control("turn_off") is True
 
         mock_connector.send.assert_called_once_with(device, "turn_off")

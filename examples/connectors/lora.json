@@ -1,7 +1,7 @@
 {
 	"$schema": "../../config.schema.json",
 	"$comment": "A LoRa radio wired straight to this host over a serial port — the point-to-point half of LoRa, for a link with no network server at all. If your traffic arrives through ChirpStack or The Things Stack, use examples/connectors/lorawan.json instead: it needs no radio on this machine and no extra dependency. The module families here share no command syntax, so a dialect is a receive regex plus a send template rather than a driver; `dialect: \"custom\"` with your own regex is what makes a module nobody here has heard of work. Needs `pip install -r requirements-lora.txt`.",
-	"version": "0.0.0",
+	"version": "1.0.0",
 	"env": "prod",
 	"logger_level": "info",
 

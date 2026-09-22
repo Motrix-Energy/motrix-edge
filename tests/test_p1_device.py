@@ -43,23 +43,105 @@ class TestP1ReceiveMQTT:
 
 
 class TestP1ReceiveLoRa:
-    def test_lora_noop(self, p1_lora):
-        # LoRa receive is a stub — should not crash
+    def test_lora_refuses_without_crashing(self, p1_lora):
         p1_lora.receive("some_data")
-        # data stays at initial empty dict
+        # data stays at initial empty dict: a gap, never an invented reading
         assert p1_lora.data == {}
 
 
 class TestP1ReceiveDispatch:
-    def test_unknown_protocol_raises(self):
-        device = P1(
-            name="p1_bad",
-            connector_options={"name": "x", "protocol": "zigbee"},
+    """A protocol a P1 cannot serve is refused, never raised.
+
+    The raise this replaced was untrappable when it was written: it landed on a bare daemon
+    thread behind connectors/mqtt.py, and was fatal to the whole run behind the polling
+    connectors, which spent the supervisor's restart budget on it and then counted as
+    finished. `Connector.deliver` has since made that survivable everywhere — but being
+    caught by the guard meant for a *device bug* is still the wrong way for a plain wiring
+    mistake to surface, because it buys a traceback where the refusal names the fix. The
+    declaration lives on the class; see api/device.py.
+    """
+
+    @staticmethod
+    def _p1_on(protocol: str, name: str = "p1_bad"):
+        return P1(
+            name=name,
+            connector_options={"name": "x", "protocol": protocol},
             listener_options={},
             controller_options={},
         )
-        with pytest.raises(NotImplementedError):
-            device.receive("topic", "payload")
+
+    @pytest.mark.parametrize("protocol", ["zigbee", "lora", "lorawan", "pseudo", "modbus_tcp", None])
+    def test_an_unserved_protocol_is_refused_rather_than_raised(self, protocol):
+        device = self._p1_on(protocol)
+        assert device.receive("topic", "payload") is False
+        assert device.data == {}
+
+    @pytest.mark.parametrize("protocol,expected", [
+        # Each message has to carry what a generic sentence could not: the arithmetic that
+        # makes LoRa permanent, and the one key that makes a replay work.
+        ("lora", "700-1000 bytes"),
+        ("lorawan", "field map"),
+        ("pseudo", "emulates"),
+        ("zigbee", "DSMR telegram"),
+    ])
+    def test_the_refusal_is_reported_once_at_construction(self, caplog, protocol, expected):
+        with caplog.at_level(logging.ERROR):
+            device = self._p1_on(protocol)
+        errors = [r for r in caplog.records if r.levelname == "ERROR"]
+        assert len(errors) == 1, "an operator hears this once at startup, not once per message"
+        assert expected in errors[0].message
+        assert protocol in errors[0].message
+
+        # And not again per payload: the per-message line is DEBUG.
+        caplog.clear()
+        with caplog.at_level(logging.ERROR):
+            for _ in range(5):
+                device.receive("topic", "payload")
+        assert [r for r in caplog.records if r.levelname == "ERROR"] == []
+
+    @pytest.mark.parametrize("protocol", [["mqtt"], {"mqtt": True}, {"a", "b"}])
+    def test_an_unhashable_protocol_is_refused_rather_than_raised(self, protocol):
+        """Config only *warns* when the schema refuses `protocol`, so a list or an object
+        reaches the constructor. Membership in the refusal table would hash it and raise
+        TypeError — which main.create_classes catches, dropping the meter silently instead
+        of creating one that says why it is useless."""
+        device = self._p1_on(protocol)
+        assert device.receive("topic", "payload") is False
+
+    def test_a_served_protocol_says_nothing_at_construction(self, caplog):
+        with caplog.at_level(logging.DEBUG):
+            self._p1_on("mqtt", name="p1_good")
+        assert [r for r in caplog.records if r.levelname == "ERROR"] == []
+
+    def test_a_replay_emulating_mqtt_is_served_untouched(self, caplog):
+        # Config resolves `emulates` before injecting, so a replay connector standing in for
+        # a broker reaches the device as "mqtt". The golden fixture runs exactly this way.
+        with caplog.at_level(logging.DEBUG):
+            device = self._p1_on("mqtt", name="p1_replayed")
+        telegram = _build_p1_telegram("1-0:1.8.1(001234.567*kWh)\r\n")
+        assert device.receive("p1/data", telegram) is True
+        assert [r for r in caplog.records if r.levelname == "ERROR"] == []
+
+
+class TestP1ReceiveArity:
+    """Both call shapes, because PseudoConnector chooses between them per replay row.
+
+    A row with a non-empty `topic` column is dispatched as `receive(topic, payload)` and one
+    without as `receive(payload)`. Accepting only the first made a topic-less replay produce
+    one logged error per row and no readings at all.
+    """
+
+    def test_a_topic_less_payload_parses(self, p1_mqtt):
+        telegram = _build_p1_telegram("1-0:1.8.1(001234.567*kWh)\r\n")
+        assert p1_mqtt.receive(telegram) is True
+        assert p1_mqtt.get_total_energy_kwh() == 1234.567
+
+    def test_both_arities_agree(self, p1_mqtt):
+        telegram = _build_p1_telegram("1-0:1.8.1(001234.567*kWh)\r\n")
+        p1_mqtt.receive(telegram)
+        one_argument = p1_mqtt.data
+        p1_mqtt.receive("p1/data", telegram)
+        assert p1_mqtt.data == one_argument
 
     def test_framework_publishes_after_receive(self, p1_mqtt):
         # receive() only parses into self.data — it no longer self-registers.
@@ -79,8 +161,13 @@ class TestP1Properties:
         assert p1_mqtt.is_writable is False
 
     def test_control_is_noop(self, p1_mqtt):
-        # P1 is not writable — Device.control() warns and no-ops
-        p1_mqtt.control("anything")  # should not raise
+        # P1 is not writable — Device.control() warns, no-ops and answers False.
+        assert p1_mqtt.control("anything") is False  # should not raise
+
+    def test_control_mqtt_reports_the_refusal(self, p1_mqtt):
+        """control_mqtt logged "Controlled ..." unconditionally on a device that is never
+        writable, so the line was a claim it could not once make."""
+        assert p1_mqtt.control_mqtt("anything") is False
 
 
 def _obis_energy_entry(values, unit="kWh", instance=8):
@@ -333,5 +420,5 @@ class TestP1RejectsUnreadableTelegrams:
         # longer shows the previous value repeated under a new timestamp.
         assert len(backend.device_data_calls) == 1
 
-    def test_the_lora_stub_produces_no_reading(self, p1_lora):
+    def test_an_unserved_protocol_produces_no_reading(self, p1_lora):
         assert p1_lora.receive("anything") is False

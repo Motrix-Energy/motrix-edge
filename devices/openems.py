@@ -27,6 +27,23 @@ class Openems(Device, MetricSource, EnergyMeter):
 	asks for an `EnergyMeter`.
 	"""
 
+	SUPPORTED_PROTOCOLS = ("openems",)
+
+	PROTOCOL_REFUSAL = (
+		"an OpenEMS reading is a /rest/channel response body, which reaches a device over "
+		"'openems'"
+	)
+
+	UNSERVABLE_PROTOCOLS = {
+		# The near miss, not a random transport: connectors/openems.py *subclasses* the HTTP
+		# one, so "point the http_api connector at the Edge" looks like it should work. It does
+		# not — the subclass exists precisely because a plain http_api connector builds no
+		# /rest/channel/<component>/<pattern> path and sends none of the Edge's Basic auth, so
+		# it would poll whatever URL was written and hand this device the answer to a different
+		# question.
+		"http_api": "connectors/openems.py subclasses the HTTP one, but a plain 'http_api' connector builds no /rest/channel/<component>/<pattern> path and sends none of the Edge's Basic auth; use protocol 'openems'",
+	}
+
 	@override
 	def __init__(self, name: str, connector_options: dict[str, Any], listener_options: dict[str, Any], controller_options: dict[str, Any]) -> None:
 		super().__init__(name, connector_options, listener_options, controller_options)
@@ -35,18 +52,16 @@ class Openems(Device, MetricSource, EnergyMeter):
 
 	@override
 	def receive(self, *args, **kwargs) -> Optional[bool]:
-		match self.connector_options["protocol"]:
-			case "openems":
-				if len(args) == 2:
-					self.LOGGER.debug(f"Ignoring topic '{args[0]}' on {self.name}: openems payloads carry no topic")
-				if not args:
-					self.LOGGER.warning(f"Empty receive() call on {self.name}")
-					return False
-				return self.receive_openems(args[-1])
-			case _:
-				self.LOGGER.error(f"Unknown protocol {self.connector_options['protocol']} for {self.name}")
-				self.LOGGER.debug(f"{self.connector_options=}, {args=}, {kwargs=}")
-				raise NotImplementedError(f"Protocol {self.connector_options['protocol']} not implemented for {self.name}")
+		if self.refuse_unserved_protocol(*args, **kwargs):
+			return False
+		# Both arities, because PseudoConnector picks one per replay row by whether the
+		# `topic` column is empty; the live connector always sends one.
+		if len(args) == 2:
+			self.LOGGER.debug(f"Ignoring topic '{args[0]}' on {self.name}: openems payloads carry no topic")
+		if not args:
+			self.LOGGER.warning(f"Empty receive() call on {self.name}")
+			return False
+		return self.receive_openems(args[-1])
 
 	def receive_openems(self, payload: str) -> bool:
 		"""Parse a `/rest/channel/...` response body into `self.data`.

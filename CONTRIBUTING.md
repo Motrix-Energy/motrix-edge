@@ -77,14 +77,22 @@ Everything lives in `connectors/` plus one test file — no central file needs e
 3. **Implement `start()`** — it blocks; `main` runs it in its own supervised daemon thread.
 	- Call `self.on_connected()` once the transport is up (marks write-only devices connected).
 	- For each inbound message: find the target device (you received the mapping via
-	  `inject_devices()`; per-device routing hints live in `device.listener_options`), call
-	  `device.receive(payload)`, then `self.on_device_data_received(device, accepted)` **passing what
-	  `receive()` returned** — this marks the device data-ready/connected, publishes it to
-	  `DevicesManager` (so algorithms see it), and fans the data out to storage. Skip either call and
-	  algorithms never see the data. A device returns `False` when the payload gave it nothing usable;
-	  forwarding that is what keeps a corrupt frame out of storage instead of republishing the device's
-	  previous reading under a new timestamp. The argument defaults to accepted, so a connector that
-	  omits it behaves as before.
+	  `inject_devices()`; per-device routing hints live in `device.listener_options`) and call
+	  **`self.deliver(device, payload)`** — or `self.deliver(device, topic, payload)` if your
+	  transport has a routing key. That is the only place a connector calls `device.receive()`.
+	  It forwards what `receive()` returned to `on_device_data_received`, which marks the device
+	  data-ready/connected, publishes it to `DevicesManager` (so algorithms see it) and fans the
+	  data out to storage. A device returns `False` when the payload gave it nothing usable, and
+	  forwarding that is what keeps a corrupt frame out of storage instead of republishing the
+	  device's previous reading under a new timestamp.
+	- **`deliver()` is also the guard**, and that is why it exists rather than the two calls you
+	  would otherwise write by hand. A device is a plugin: it is contracted never to raise, but
+	  one that does used to end the run — the exception escaped your `start()`, the supervisor
+	  spent its restart budget, and `main` read the finished worker as "all connectors finished"
+	  and shut the EMS down over one device's bug. `deliver()` logs that with its traceback,
+	  rate-limits the repeat, drops the reading and returns `False`, so branch on it if you track
+	  per-device failure state. Everything else in `connectors/` stays narrow: catch only what
+	  *your* code can raise, because a bug of yours should reach the supervisor.
 
 4. **Make `start()` stoppable.** The framework never kills a thread; it asks it to wind down (see
 	*Contracts* below). Loop on `while not self.is_stopping():` and sleep through
@@ -126,7 +134,7 @@ Everything lives in `connectors/` plus one test file — no central file needs e
 	  about topics and payload wrapping, so it overrides `resolve_listener()` (a device's
 	  devEUI into a subscription filter and a routing regex) and `resolve_downlink()` (a
 	  Switch token into base64 inside a vendor JSON envelope), and inherits the connect
-	  ladder, paho's reconnect, the resubscribe-on-reconnect and the threaded fan-out.
+	  ladder, paho's reconnect, the resubscribe-on-reconnect and the bounded per-device dispatch.
 
 	If the seam you need does not exist yet, **extract it with a default body that reproduces
 	the parent's current behaviour**, and add a `TestParentSeam` class asserting the parent is
@@ -177,6 +185,21 @@ Everything lives in `connectors/` plus one test file — no central file needs e
 	file. Do **not** add your connector to `tests/test_shutdown.py`: it imports every connector
 	at module top, so an import there would abort collection whenever the extra is absent.
 
+	**Working outside this repository?** The test files above open with
+	`from tests.conftest import …`, which resolves only in this checkout. The axis-generic
+	doubles and the threading harness they use — `StubDevice`, `StubConnector`,
+	`StubStorageBackend`, `StubAlgorithm`, `make_devices_access`, `run_in_thread`,
+	`wait_until`, `assert_stops`, `write_replay` — all live in `api/testing.py` and import
+	from anywhere; `conftest.py` only re-exports them. The checks this repository runs over
+	its own plugins are in `api/conformance.py`, and `check_loads` is the one worth running
+	first: it drives the real loader, so it catches the class-name and `issubclass` mistakes
+	that no schema check can see. Neither module is a supported API yet.
+
+	The four concrete-device factories (`make_p1`, `make_shelly`, `make_pseudo`,
+	`build_p1_telegram`) stay in `tests/conftest.py` — they build shipped devices, and `api/`
+	must not import an axis. `tests/test_shutdown.py` uses `make_pseudo`, so copy that one
+	helper across rather than importing it.
+
 ## Recipe: add a new device
 
 Everything lives in `devices/` plus one test file — no central file needs editing.
@@ -198,9 +221,10 @@ Everything lives in `devices/` plus one test file — no central file needs edit
 
 2. **Implement `receive(self, *args, **kwargs)`** — connectors call it with the raw transport data
 	(MQTT passes `(topic, payload)`, HTTP, Modbus and OpenEMS pass `(payload,)`, Home Assistant
-	passes `(entity_id, payload)`). Dispatch on
-	`self.connector_options["protocol"]` if you support more than one, parse into `self.data`, and
-	return. **You do not call `update_device`** — the connector's `on_device_data_received()` hook
+	passes `(entity_id, payload)`). If you serve more than one
+	transport, list them in `SUPPORTED_PROTOCOLS` rather than branching on the protocol — see the
+	refusal paragraph below; no shipped device carries a `match` on it any more. Parse into
+	`self.data`, and return. **You do not call `update_device`** — the connector's `on_device_data_received()` hook
 	publishes the device to `DevicesManager` for you, so a well-formed `receive()` is all algorithms need.
 
 	**Every argument is a `str`, and that is a contract, not an accident.** `PseudoConnector`
@@ -208,14 +232,37 @@ Everything lives in `devices/` plus one test file — no central file needs edit
 	handed its device a pre-parsed `dict` would force a second, replay-only parse path — and
 	the backtest, which is what every regression fixture uses, would then never exercise the
 	production parser. `connectors/modbus_tcp.py` serialises its register words to JSON for
-	exactly this reason. Accept the two-argument arity even if your connector only ever sends
-	one: a replay row with a non-empty `topic` column otherwise raises a `TypeError` that the
-	replay loop swallows, and the backtest silently produces nothing.
+	exactly this reason. Accept **both** arities even if your connector only ever sends one:
+	`PseudoConnector` chooses between them per row — a replay row with a non-empty `topic`
+	column is dispatched as `receive(topic, payload)` and one without as `receive(payload)` —
+	so a device that accepts only the two-argument form turns a topic-less replay into one
+	logged `TypeError` per row and no readings at all. `devices/p1.py`'s `receive_mqtt`
+	handles both in two lines.
 
 	`protocol` is injected by `Config` from the connector the device is wired to, and you do **not**
 	need a branch for `pseudo`: a replay connector declares `emulates` (see `connectors/pseudo.schema.json`) and
 	impersonates the transport it stands in for, so your device is backtestable through a replay file
 	without knowing it. Payloads reach you byte for byte, including multi-line ones.
+
+	**A protocol you cannot serve is refused, never raised — and you declare it rather than
+	branch on it.** Set `SUPPORTED_PROTOCOLS` on your class, add `UNSERVABLE_PROTOCOLS` or
+	`PROTOCOL_REFUSAL` if a generic sentence would waste an operator's afternoon, and make
+	`if self.refuse_unserved_protocol(*args, **kwargs): return False` the first line of
+	`receive()`. `Device.__init__` logs the ERROR for you, once, at startup on the main thread,
+	where an operator reads logs and where it fires whether or not a payload ever arrives. That
+	declaration is the single source of truth — there is no `match` on `protocol` left in any
+	device — and `tests/test_device_protocol.py` sweeps every class to keep it honest. A device
+	that dispatches on no protocol at all declares nothing and is never asked
+	(`devices/pseudo.py`).
+
+	Do not raise. `Connector.deliver()` will catch it, but being caught by the guard meant for
+	a *device bug* is the wrong way for a plain config mistake to surface: it logs a traceback
+	and rate-limits the repeat, where the refusal says the one sentence that names the fix. And
+	do not raise in `__init__` at all. `main.create_classes` contains it — it logs the
+	traceback and skips that one entry — but a skipped entry is a device that silently does
+	not exist, which is worse than one that visibly never reports: an algorithm summing
+	`EnergyMeter`s would compute a site total short one meter with nothing anywhere saying
+	so. `devices/p1.py` is the worked example.
 
 	**Never assign an unusable parse result to `self.data`, and return `False` when you didn't.**
 	Malformed input is routine — a CRC error on a noisy line, a truncated frame, a topic you don't
@@ -235,12 +282,16 @@ Everything lives in `devices/` plus one test file — no central file needs edit
 	**Put `Switch` only on a class that is genuinely writable, and split the class if
 	writability is a config decision.** `Switch` is a *type* claim algorithms act on directly:
 	`algorithms/auto_toggle.py` selects actuators with `isinstance(device, Switch) and
-	device.data`, with **no** `is_writable` check, and `Algorithm.control_device` writes the
-	decision to storage *before* `Device.control` gets to refuse a non-writable device. So a
-	read-only device subclassing `Switch` puts a row in `algorithm_decisions.csv` claiming an
-	algorithm switched a thermometer on, **every tick** — a wrong entry in the versioned
-	storage contract (`docs/storage-format.md`), not merely a noisy log. Deriving
-	`is_writable` per instance does not fix it, because `isinstance` is class-level. The
+	device.data`, with **no** `is_writable` check. So a read-only device subclassing `Switch`
+	is picked as an actuator and commanded **every tick**. `Device.control` refuses each
+	command and answers `False`, and `Algorithm.control_device` records a decision only when
+	it answers `True` — so the versioned storage contract (`docs/storage-format.md`) stays
+	clean. What that gate cannot fix is the algorithm's own belief that it holds an actuator:
+	it goes on asking a thermometer to switch on, forever, and no feedback path tells it
+	otherwise. Deriving `is_writable` per instance does not help either, because `isinstance`
+	is class-level. The
+	`api/conformance.py`'s `check_switch_honesty` is the sweep that enforces this; run it over
+	your own classes. The
 	pattern to copy is a base read device plus a thin subclass: `ModbusMeter` /
 	`ModbusSwitch`, `HaEntity` / `HaSwitch`, `Openems` / `OpenemsSwitch`, each subclass about
 	fifteen lines. The plugin loader makes this free — no central registration.
@@ -291,6 +342,16 @@ Everything lives in `devices/` plus one test file — no central file needs edit
 6. **Tests**: copy `tests/test_p1_device.py` (a meter with a parser) or `tests/test_shelly_plug.py`
 	(a switch). `pytest` must stay green with no hardware and no network.
 
+	**Working outside this repository?** The test files above open with
+	`from tests.conftest import …`, which resolves only in this checkout. The axis-generic
+	doubles and the threading harness they use — `StubDevice`, `StubConnector`,
+	`StubStorageBackend`, `StubAlgorithm`, `make_devices_access`, `run_in_thread`,
+	`wait_until`, `assert_stops`, `write_replay` — all live in `api/testing.py` and import
+	from anywhere; `conftest.py` only re-exports them. The checks this repository runs over
+	its own plugins are in `api/conformance.py`, and `check_loads` is the one worth running
+	first: it drives the real loader, so it catches the class-name and `issubclass` mistakes
+	that no schema check can see. Neither module is a supported API yet.
+
 ## Recipe: add a new storage backend
 
 Everything lives in `storage/` plus one test file — no central file needs editing.
@@ -337,6 +398,20 @@ Everything lives in `storage/` plus one test file — no central file needs edit
 	semantics are frozen by `docs/storage-format.md` and pinned byte-for-byte by
 	`tests/test_storage_contract.py` against the fixture in `examples/`. Changing that backend's
 	output is a cross-repo breaking change — bump `STORAGE_FORMAT_VERSION` and read the doc first.
+
+	**The two filenames are reserved, and that applies to your backend too.** `device_data.csv` and
+	`algorithm_decisions.csv` under a backend's `output_dir` are format 1.0 by name *and* by column
+	shape, and the viewer identifies them by shape — so a backend that writes either name with
+	those columns produces a file the viewer will read as a Motrix Edge run, with none of the
+	byte-exactness `tests/test_storage_contract.py` guarantees. Only a backend that passes that
+	fixture comparison should emit them. Anything else: pick your own names, or your own directory.
+
+	`StorageManager` warns at startup when two registered backends resolve to the same `output_dir`,
+	because the failure it catches needs no third party: two `csv_file` entries on one directory
+	interleave their rows into one file, and the header is decided from the size on disk at open
+	time, so the second one appends to a file the first already started with nothing marking the
+	seam. It is a warning and not a refusal — storage is a side channel and must never decide
+	whether the run happens.
 	Every *other* backend answers only to its own store and is free to shape output as it likes.
 
 	**Override `close()` if you buffer.** `StorageManager.close_all()` calls it once at shutdown;
@@ -378,6 +453,16 @@ Everything lives in `storage/` plus one test file — no central file needs edit
 	(the no-op), or `tests/test_storage_influxdb.py` (a network client, mocked at its single
 	construction site). `pytest` must stay green with no external service — mock it or write to a
 	temp dir.
+
+	**Working outside this repository?** The test files above open with
+	`from tests.conftest import …`, which resolves only in this checkout. The axis-generic
+	doubles and the threading harness they use — `StubDevice`, `StubConnector`,
+	`StubStorageBackend`, `StubAlgorithm`, `make_devices_access`, `run_in_thread`,
+	`wait_until`, `assert_stops`, `write_replay` — all live in `api/testing.py` and import
+	from anywhere; `conftest.py` only re-exports them. The checks this repository runs over
+	its own plugins are in `api/conformance.py`, and `check_loads` is the one worth running
+	first: it drives the real loader, so it catches the class-name and `issubclass` mistakes
+	that no schema check can see. Neither module is a supported API yet.
 
 ## Recipe: add a new service
 
@@ -470,7 +555,8 @@ hands it the two handles it needs.
 	`services/rest_api.schema.json`. Any option that can be written as `${VAR}` must also accept
 	`"string"` and `"null"` — interpolation runs *after* validation and yields only strings or null —
 	and must be coerced with `api/options.py` rather than a bare `int()`: a `ValueError` escaping your
-	`__init__` escapes `create_classes` and kills the process.
+	`__init__` is contained by `create_classes`, but the service is then skipped entirely — the API
+	is simply not there, with nothing listening and nothing at the port to say why.
 
 8. **Config entry** (config key is `class`):
 
@@ -494,6 +580,21 @@ hands it the two handles it needs.
 	an optional dependency, guard the module with `pytest.importorskip("<dep>")` **before any project
 	import** — a bare `ModuleNotFoundError` at module top aborts collection for the *entire* suite,
 	not just your file. `pytest` must stay green with no network on a core-only checkout.
+
+	**Working outside this repository?** The test files above open with
+	`from tests.conftest import …`, which resolves only in this checkout. The axis-generic
+	doubles and the threading harness they use — `StubDevice`, `StubConnector`,
+	`StubStorageBackend`, `StubAlgorithm`, `make_devices_access`, `run_in_thread`,
+	`wait_until`, `assert_stops`, `write_replay` — all live in `api/testing.py` and import
+	from anywhere; `conftest.py` only re-exports them. The checks this repository runs over
+	its own plugins are in `api/conformance.py`, and `check_loads` is the one worth running
+	first: it drives the real loader, so it catches the class-name and `issubclass` mistakes
+	that no schema check can see. Neither module is a supported API yet.
+
+	The four concrete-device factories (`make_p1`, `make_shelly`, `make_pseudo`,
+	`build_p1_telegram`) stay in `tests/conftest.py` — they build shipped devices, and `api/`
+	must not import an axis. `tests/test_shutdown.py` uses `make_pseudo`, so copy that one
+	helper across rather than importing it.
 
 ## Recipe: add a new algorithm
 
@@ -519,7 +620,10 @@ MQTT or HTTP without changing a line.
 	```
 
 	Forward `**kwargs` to `super().__init__` — the base reads `delay_seconds`, `required_devices`, and
-	`wait_for_devices_timeout` straight from your config `options`.
+	`wait_for_devices_timeout` straight from your config `options`, and coerces all three through
+	`api/options.py` so a `${VAR}` that arrives as a string warns instead of crashing your worker
+	thread. The lockstep check follows `**kwargs` up the MRO, so those three count as *your*
+	options for schema purposes even though you never name them.
 
 2. **Implement `main()`** — one control step. Call `super().main()` first (it refreshes `self.devices`
 	from `devices_manager.get_devices()`), then select devices by capability and act:
@@ -542,7 +646,9 @@ MQTT or HTTP without changing a line.
 	`isinstance`-check the capability ABCs in `api/capabilities.py` (`EnergyMeter`, `Switch`) — **never**
 	`isinstance(device, P1)`. That is what keeps the algorithm hardware-agnostic. Actuate through
 	`self.control_device(device, command)`: it routes the command to the **live** device (not your
-	snapshot copy) and logs the decision to storage.
+	snapshot copy) and logs the decision to storage **when the command reached a transport**. It
+	returns that verdict as a `bool`, so an algorithm that cares can see whether its command
+	actually went anywhere; ignoring it is fine and is what `algorithms/auto_toggle.py` does.
 
 3. **Gate on required devices.** Set the `required_devices` class attribute or pass it via config
 	`options`; the framework blocks until each is data-ready and connected before the first `main()`,
@@ -555,8 +661,13 @@ MQTT or HTTP without changing a line.
 	merely similar: the replay runs **lockstep**, holding each timestep until your `main()` returns,
 	so a slow algorithm slows the backtest instead of silently skipping timesteps. Read the moment
 	with `devices_manager.get_simulation_time()`; it is stable for the whole of your `main()`.
-	Algorithms ship **no options schema** (the other three axes do); your constructor signature is the
-	options contract, enforced by `TypeError` at load time.
+	**Ship `algorithms/<class>.schema.json`.** All five axes validate options now. Copy
+	`algorithms/auto_toggle.schema.json`: if your algorithm adds no options of its own it is that
+	file unchanged, because the three base options are the whole contract. Declare every option
+	the constructor chain accepts and nothing it does not — the check runs in both directions —
+	and leave `devices_manager` out: `main` injects it, and declaring it would let a config entry
+	collide with the injected value and fail instantiation with "got multiple values". An algorithm
+	with no schema file simply gets no options validation, exactly as on the other four axes.
 
 5. **Config entry** (config key is `class`):
 
@@ -580,8 +691,142 @@ MQTT or HTTP without changing a line.
 	`EnergyMeter`, a stub `Switch`, and a no-capability device), so no hardware, broker, or concrete
 	device class is involved. `pytest` must stay green.
 
+	**Working outside this repository?** The test files above open with
+	`from tests.conftest import …`, which resolves only in this checkout. The axis-generic
+	doubles and the threading harness they use — `StubDevice`, `StubConnector`,
+	`StubStorageBackend`, `StubAlgorithm`, `make_devices_access`, `run_in_thread`,
+	`wait_until`, `assert_stops`, `write_replay` — all live in `api/testing.py` and import
+	from anywhere; `conftest.py` only re-exports them. The checks this repository runs over
+	its own plugins are in `api/conformance.py`, and `check_loads` is the one worth running
+	first: it drives the real loader, so it catches the class-name and `issubclass` mistakes
+	that no schema check can see. Neither module is a supported API yet.
+
+## Publishing a plugin outside this repository
+
+The five recipes above assume your plugin lives in this tree. It does not have to. A plugin in a
+vendor sub-directory of an axis loads today, unmodified, with no registry entry, no packaging and no
+pull request:
+
+```
+connectors/acme/solar.py            class SolarConnector(Connector)
+connectors/acme/solar.schema.json
+```
+
+```json
+{ "name": "roof", "protocol": "acme.solar", "options": { "host": "10.0.0.7" } }
+```
+
+**The config value is `"<vendor>.<name>"`, and it is frozen.** The dot is a directory separator:
+`acme.solar` resolves to `<axis>/acme/solar.py` for the import and `<axis>/acme/solar.schema.json`
+for the options schema. Everything else in this section is reversible; the string an operator types
+into `config.json` is not, because that file is mounted read-only precisely so upgrades never ask
+them to rewrite it. It is deliberately **not** `community.<vendor>.<name>`: the bare form survives
+unchanged if plugins ever move to a separate `sys.path` root, into a `motrix_edge/` package, or into
+wheels, whereas a hard-coded `community.` segment would have to be migrated in every deployment.
+
+**Your repository.** Name it `motrix-edge-<axis>-<name>` — `motrix-edge-connector-solarvendor` — and
+give it the GitHub topic `motrix-edge-plugin`. That topic is the whole discovery mechanism; there is
+no index to be added to and no maintainer to wait for.
+
+```
+motrix-edge-connector-solarvendor/
+	connectors/acme/solar.py
+	connectors/acme/solar.schema.json
+	tests/test_solar.py          # imports api.testing, runs api.conformance
+	LICENSE                      # extensionless
+	README.md
+```
+
+Keep `LICENSE` extensionless. `.dockerignore` strips `*.md`, so a `LICENSE.md` would be missing from
+a locally built image — and the image is a distribution, so the notice has to travel with it.
+
+**Retrieving one** is three commands and a config entry:
+
+```bash
+git clone --depth 1 https://github.com/someone/motrix-edge-connector-solarvendor /tmp/p
+cp -r /tmp/p/connectors/acme connectors/
+docker compose up -d --build
+```
+
+There is no compose edit, no bind mount, no `PYTHONPATH` and no derived image: compose builds `edge`
+from `context: .`, and `.dockerignore` excludes no axis directory, so a vendored plugin is already in
+the build context. Rebuilding is the status quo rather than a new imposition, because no
+`motrix-edge` image is published today. The one real gap is a plugin with its own pip dependency;
+there is no mechanism for that yet, and adding one waits until somebody actually needs it.
+
+Bad options are a startup warning naming the key. A missing optional dependency is one skipped entry
+and the rest of the EMS starts. A module that raises at import — or calls `sys.exit()` — is one
+skipped entry and a traceback.
+
+**What a shared algorithm can actually ask a device, and it is less than you expect.** An algorithm
+is portable because it selects devices by capability, never by class, and the entire capability
+vocabulary is three things: `EnergyMeter.get_total_energy_kwh()`, which is cumulative imported kWh
+and nothing else; `Switch`, a marker interface meaning binary on/off actuated with a `str` token; and
+`MetricSource.get_metrics()`, which flows to *storage* and is invisible to algorithms. The one hook a
+generic config-driven device has for saying what a number means — `role` in
+`devices/modbus_meter.schema.json`, `devices/modbus_switch.schema.json`, `devices/lora.schema.json`
+and `devices/lora_switch.schema.json` — is a closed enum with exactly one member,
+`energy_import_kwh`.
+
+So a published algorithm can ask a device it has never seen two questions: how many kWh it has
+imported in total, and whether it is switchable. There is no instantaneous power, no battery state of
+charge, no setpoint or modulation, no tariff or price signal, no forecast and no curtailment limit.
+Every richer reading a device already parses flows to storage and is unreachable from an algorithm.
+Widening that vocabulary is a live question and worth more to algorithm sharing than any packaging
+work, but it is a design decision about an energy domain model rather than a distribution one, and
+nothing here changes it. Write your algorithm against what exists.
+
+**If what you are sharing is data, it costs no Python at all.** A new *dialect* of a transport and a
+new payload layout are both config, not code. `examples/connectors/lorawan.json` supports a LoRaWAN
+network server `connectors/lorawan.py` has never heard of, using `profile: "custom"` and topic
+templates from `config.json`; a new Modbus meter is a `registers` array; a new LoRa node is a `fields`
+map. A shared JSON fragment cannot execute, cannot reach a credential and cannot crash the EMS, and
+it is reviewable by reading it — so prefer it whenever it will do. Two rules if you publish one: it
+must never contain `${`, because `Config` resolves that anywhere in the document and a fragment
+setting `"unit": "${MQTT_PASSWORD}"` would ride a credential into `device_data.csv`; and it describes
+hardware, never a deployment.
+
+**Compatibility, until there is a version handshake.** There is none yet — no `api/version.py`, no
+declared plugin API version — so the rule that matters is which changes here can break you. A
+defaulted parameter added to an **upcall**, a method the framework offers you, is a minor change:
+`on_device_data_received` gained `accepted` with a default for exactly this reason. A parameter added
+to a **downcall**, a method the framework calls on your class, is a breaking change, because the
+framework calls those positionally. That asymmetry is why `Device.control` returning `bool` and
+`DevicesAccess.control` propagating it landed before any external plugin existed rather than after.
+
+**Whether a plugin belongs in *this* repository instead.** A plugin is admitted here when it is a
+**protocol rather than a product**, its specification is openly published, and it can be tested with
+no hardware and no network. Those criteria fit `connectors/` exactly, and they are meant to: that
+axis is where growth would otherwise be unbounded. They fit `devices/` badly, because a device is
+inherently product-shaped — that is the point of the axis — so for `devices/` the bar is the last two
+criteria plus a general one: the device must be useful to more than its manufacturer's customers, and
+`devices/shelly_plug.py` is here as a worked example of the axis rather than as a precedent.
+`algorithms/` and `storage/` are judged on the last two criteria alone. `services/` is the one axis
+that cannot yet be published outside this tree at all, because `Service.__init__` is typed against a
+concrete `Supervisor`; a new service is therefore admitted here on the same two universal criteria,
+and the recipe above stands. Anything specific to one manufacturer's product, on any axis, belongs in
+its author's own repository on the convention above — which is a statement of policy, not a
+description of the current tree.
+
+**What an operator is agreeing to when they install one.** A community plugin runs in-process, in a
+supervised thread, with no sandbox — Python offers none worth the name. It can actuate any physical
+device, read every other device's live state through the `DevicesManager` singleton whether or not one
+was injected into it, reach a connector's credentials through a device's deliberately-shared live
+connector, and write anything it likes to storage. The containment above changes the blast radius of
+a *mistake* — one bad plugin is one skipped entry instead of a dead EMS — and nothing changes the
+blast radius of malice. Containment is for bugs; for malice there is only provenance. `SECURITY.md`
+says the same thing to the person deciding whether to install yours.
+
 ## Contracts shared with the other axes
 
+- **The config format version is yours to bump, and plugin options are not part of it.**
+  `config.json`'s optional top-level `version` declares the format of the *document*;
+  `CONFIG_FORMAT_VERSION` in `config/version.py` is the format a build understands. Adding a
+  **top-level** key is a MINOR bump; removing or renaming one, changing an existing key's
+  meaning or type, or making an optional key required, is MAJOR. Adding or changing a
+  **plugin's `options`** is neither — those live in that plugin's `*.schema.json` beside its
+  constructor signature, which the kwargs contract above already covers. Bump the constant
+  and `config.schema.json`'s `$comment` in the same edit; a test fails when they disagree.
 - **Devices** only parse transport data into `self.data` inside `receive()`; the framework publishes
   the device to `DevicesManager` (so algorithms see it) via the connector's `on_device_data_received()`
   hook — device authors never call `update_device` themselves.
@@ -618,3 +863,14 @@ MQTT or HTTP without changing a line.
 - Python **3.12+** (the code uses `typing.override` and PEP 701 f-strings).
 - Indentation is **tabs**, in Python and JSON alike.
 - Log through `self.LOGGER` (set up by the ABCs), never `print()`.
+
+## Licensing
+
+Apache-2.0, the same licence as the project — see `LICENSE` and `NOTICE`. **Inbound equals
+outbound**: a contribution is offered under the licence the project already carries, so nothing
+you send changes the terms anyone else receives it under. There is no CLA, no copyright
+assignment and no sign-off requirement; you keep the copyright in what you write.
+
+A plugin in its own repository is yours to license as you like. Apache-2.0 keeps it symmetric
+with the runtime it imports, and an operator vendoring your directory into their checkout has one
+fewer thing to reason about — but it is a recommendation, not a condition of the convention.

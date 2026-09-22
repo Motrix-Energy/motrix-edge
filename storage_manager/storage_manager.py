@@ -1,3 +1,4 @@
+import os
 from datetime import datetime
 from logging import Logger, getLogger
 from typing import Any
@@ -29,10 +30,38 @@ class StorageManager(metaclass=Singleton):
 		self.LOGGER = getLogger(self.__class__.__name__)
 		self._backends: list[StorageBackend] = []
 		self._closed = False
+		self._output_dirs: dict[str, str] = {}  # normalised output_dir -> first backend that claimed it
 
 	def register(self, backend: StorageBackend) -> None:
 		self._backends.append(backend)
 		self.LOGGER.info(f"Storage backend registered: {backend.name} ({backend.__class__.__name__})")
+		self._warn_on_shared_output_dir(backend)
+
+	def _warn_on_shared_output_dir(self, backend: StorageBackend) -> None:
+		"""Warn once when two backends resolve to the same directory on disk.
+		
+		Two `csv_file` entries on one `output_dir` interleave two backends' rows into one
+		file, and `CsvFileBackend._writer` decides the header from the size on disk at open
+		time — so the second one appends to a file the first already started, silently, with
+		no second header to mark the seam. The result still parses as `device_data.csv`
+		format 1.0 and the viewer will read it, which is exactly what makes it worth a line
+		at startup: nothing downstream can tell it apart from one honest run.
+		
+		Duck-typed on purpose. `api/storage_backend.py` declares no path of its own, and a
+		backend is free not to write files at all — `null` and `influxdb` have no
+		`output_dir` and are skipped here. Adding the attribute to the ABC would be a
+		downcall signature change binding every third-party backend, to buy a warning.
+		"""
+		output_dir = getattr(backend, "output_dir", None)
+		if not isinstance(output_dir, str) or not output_dir:
+			return
+		resolved = os.path.normcase(os.path.abspath(output_dir))
+		first = self._output_dirs.setdefault(resolved, backend.name)
+		if first != backend.name:
+			self.LOGGER.warning(
+				f"Storage backends '{first}' and '{backend.name}' both write to {output_dir} — "
+				f"their rows will interleave in one file, with no header to mark the seam"
+			)
 
 	def _fan_out(self, method: str, *args: Any) -> None:
 		"""Call `method` on every backend, isolating each one's failures from the rest.

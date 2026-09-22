@@ -203,6 +203,18 @@ class LoRa(Device, EnergyMeter, MetricSource):
 	_fields: list[FieldSpec]
 	_energy_names: list[str]
 
+	# Three labels, one handler — the case that makes the declaration worth having, because
+	# no derivation from method names could produce it. A network server reaches this over
+	# 'lorawan', a directly attached radio over 'lora', and a server no profile describes over
+	# plain 'mqtt' with a hand-written subscription and pattern.
+	SUPPORTED_PROTOCOLS = ("lorawan", "lora", "mqtt")
+
+	PROTOCOL_REFUSAL = (
+		"a LoRa reading is a network server's uplink envelope, or connectors/lora.py's frame "
+		"off a directly attached radio; either reaches a device over 'lorawan', 'lora' or "
+		"plain 'mqtt'"
+	)
+
 	@override
 	def __init__(self, name: str, connector_options: dict[str, Any], listener_options: dict[str, Any], controller_options: dict[str, Any]) -> None:
 		super().__init__(name, connector_options, listener_options, controller_options)
@@ -240,9 +252,9 @@ class LoRa(Device, EnergyMeter, MetricSource):
 	def _build_specs(self) -> None:
 		"""Resolve the declared field map once, warning about anything unusable.
 
-		Never raises: main.create_classes catches only AttributeError/ModuleNotFoundError/
-		TypeError, so anything else escaping a plugin constructor takes the whole process
-		down. A malformed entry is dropped with a warning; the rest of the node still decodes.
+		Never raises: a constructor that throws is contained by main.create_classes, but the
+		containment costs the whole device — one bad entry in the map and nothing here
+		reports at all. A malformed entry is dropped with a warning; the rest of the node still decodes.
 		"""
 		default_order = str(self.listener_options.get("byte_order", "big")).strip().lower()
 		if default_order not in ("big", "little"):
@@ -324,21 +336,18 @@ class LoRa(Device, EnergyMeter, MetricSource):
 
 	@override
 	def receive(self, *args, **kwargs) -> Optional[bool]:
-		match self.connector_options["protocol"]:
-			case "lorawan" | "lora" | "mqtt":
-				# Tolerate the (topic, payload) arity as well as (payload,). A LoRaWAN
-				# connector always sends two and a serial one always sends one, but a replay
-				# CSV row decides by whether its `topic` column is empty — and the resulting
-				# TypeError is swallowed by the replay's own except handler, so the backtest
-				# would silently produce nothing at all.
-				if not args:
-					self.LOGGER.warning(f"Empty receive() call on {self.name}")
-					return False
-				return self.receive_lorawan(args[-1])
-			case _:
-				self.LOGGER.error(f"Unknown protocol {self.connector_options['protocol']} for {self.name}")
-				self.LOGGER.debug(f"{self.connector_options=}, {args=}, {kwargs=}")
-				raise NotImplementedError(f"Protocol {self.connector_options['protocol']} not implemented for {self.name}")
+		if self.refuse_unserved_protocol(*args, **kwargs):
+			return False
+		# Tolerate the (topic, payload) arity as well as (payload,). A LoRaWAN connector always
+		# sends two and a serial one always sends one, but a replay CSV row decides by whether
+		# its `topic` column is empty — so a device that accepted only one shape would raise
+		# TypeError on every row of the other. `Connector.deliver` catches that now and logs
+		# one traceback against this device, which is a great deal better than the silence it
+		# used to be, but it is still a backtest that produces no readings.
+		if not args:
+			self.LOGGER.warning(f"Empty receive() call on {self.name}")
+			return False
+		return self.receive_lorawan(args[-1])
 
 	def receive_lorawan(self, payload: str) -> bool:
 		"""Decode one uplink envelope into `self.data`.

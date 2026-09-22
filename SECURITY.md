@@ -69,8 +69,39 @@ just not as a security report:
   an operator decision the compose file warns about in place.
 - **The `mqtt` and `monitoring` profiles publish their own ports** (Mosquitto, InfluxDB, Grafana).
   They are development conveniences behind opt-in profiles, configured for a laptop, not for a site.
-- **A plugin you wrote can do anything the process can.** Plugins are Python classes loaded from your
-  own `config.json`; there is no sandbox and there is not meant to be one.
+- **A plugin can do anything the process can.** Plugins are Python classes named by a
+  `config.json`; there is no sandbox and there is not meant to be one. That is as true of a
+  plugin you installed from someone else as of one you wrote — see below.
+
+## Third-party plugins
+
+A plugin can live in its own repository and be copied into an axis directory; `CONTRIBUTING.md`
+describes the convention. Installing one is a decision with consequences worth stating plainly.
+
+**They are not covered by Supported versions above.** We do not review, audit, endorse or
+distribute them, and no review could establish that one is safe in any case: the loader executes
+a module's top-level code *before* the `issubclass` gate, so anything a module does at import
+time has already happened by the time it is rejected.
+
+**Report a problem with a third-party plugin to its own repository first.** If it turns out to
+be a flaw in the loader, the API or anything else in this tree, report it here — that is in
+scope, as above. The remedy available to these maintainers for a bad plugin is to stop pointing
+at it and say why; it is not a patch, because the code is not ours to patch.
+
+**What a plugin reaches, whoever wrote it.** It runs in-process, in a supervised thread. It can
+actuate any physical device; it can read every other device's live state through the
+`DevicesManager` singleton whether or not one was injected into it; it can reach a connector's
+credentials through a device's deliberately-shared live connector, which is why
+`services/rest_api.py` allowlists every field it serves instead of using `vars()`; and it can
+write anything it likes to storage. One bad plugin is one skipped entry rather than a dead EMS,
+but that is containment for *mistakes*. For malice there is only provenance: know whose
+repository you copied from, and pin what you copied.
+
+**A shared config fragment is different, and safer.** A register map or a payload map cannot
+execute, cannot reach a credential and cannot crash the EMS, and you can review it by reading
+it. One rule: it must not contain `${`. `Config` resolves `${VAR}` anywhere in the document, so
+a contributed fragment setting `"unit": "${MQTT_PASSWORD}"` would ride a credential into
+`device_data.csv`. Refuse the string on sight.
 
 ## Disclosure
 

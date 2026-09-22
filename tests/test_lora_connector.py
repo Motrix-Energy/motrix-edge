@@ -293,7 +293,10 @@ class TestRouting:
         with caplog.at_level(logging.ERROR):
             connector._dispatch(f"+EVT:RX_1:-53:8:UNICAST:2:{PAYLOAD_HEX}")  # must not raise
         fine.receive.assert_called_once()
-        assert any("failed on a frame" in r.message for r in caplog.records)
+        # Connector.deliver owns this message now — see the note in the Home Assistant
+        # connector's equivalent test.
+        assert any("raised on a payload" in r.message for r in caplog.records)
+        assert any("boom" in r.message for r in caplog.records)
 
     def test_an_unmatched_line_is_not_an_error(self, caplog):
         """A module echoes commands, answers OK, and emits unsolicited status of its own."""

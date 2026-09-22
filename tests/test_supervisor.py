@@ -3,6 +3,8 @@
 import logging
 from threading import Event
 
+import pytest
+
 from supervisor.supervisor import RestartPolicy, Supervisor, SupervisedWorker
 
 # Fast policy so the whole file stays well under a second
@@ -51,6 +53,50 @@ class TestCleanReturn:
         assert supervised.crashes == 0
         assert any("finished" in r.message for r in caplog.records)
         assert not any(r.levelno >= logging.ERROR for r in caplog.records)
+
+
+class TestAWorkerThatExits:
+    """`_finished` must be set however `_run` leaves, which is why it lives in a finally.
+
+    A worker whose target calls sys.exit() raises SystemExit — a BaseException, so the
+    `except Exception` never saw it and the bare `self._finished.set()` after the loop was
+    never reached. main() then polled `all(worker.is_finished())` over a connector that
+    would never finish: the EMS neither restarted nor exited until SIGTERM.
+    """
+
+    def test_system_exit_finishes_the_worker_and_is_not_restarted(self, caplog):
+        def exits(worker):
+            raise SystemExit(3)
+
+        stub, supervised = make_worker(exits)
+        with caplog.at_level(logging.DEBUG):
+            run_until_finished(supervised)  # asserts is_finished()
+
+        assert stub.calls == 1  # deliberately not restarted
+        assert supervised.restarts == 0
+        assert supervised.crashes == 1  # counted, so /workers reports both paths alike
+        assert supervised.completed_cleanly is False
+
+        critical = [r for r in caplog.records if r.levelno == logging.CRITICAL]
+        assert len(critical) == 1
+        assert "SystemExit(3)" in critical[0].message
+        assert "not restarting" in critical[0].message
+
+    # The KeyboardInterrupt genuinely escapes the thread — that is the property under
+    # test — so threading.excepthook reports it and pytest turns that into a warning.
+    @pytest.mark.filterwarnings("ignore::pytest.PytestUnhandledThreadExceptionWarning")
+    def test_a_base_exception_still_finishes_the_worker(self):
+        """The reason it is a `finally` and not a sixth `except` clause: nothing here
+        catches a KeyboardInterrupt on a worker thread, and it must still not leave a
+        worker that main will wait on forever."""
+        def interrupts(worker):
+            raise KeyboardInterrupt
+
+        stub, supervised = make_worker(interrupts)
+        supervised.start()
+        supervised.join(2.0)
+        assert supervised.is_finished()
+        assert supervised.completed_cleanly is False
 
 
 class TestCrashHandling:

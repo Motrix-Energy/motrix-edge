@@ -157,7 +157,14 @@ class Main:
 					continue
 				if issubclass(actual_class, base_class):
 					classes.append(actual_class(config_entry["name"], **arguments, **config_entry.get("options", {})))
-					self.LOGGER.info(f"{base_class.__name__} {config_entry["name"]} created")
+					# getattr, not module.__file__: a namespace package has none, nor does a frozen or
+					# built-in module, and the bare access raises AttributeError — which THIS function
+					# catches four lines below and reports as "not found", turning a plugin that was
+					# created into a skipped entry. A plugin silently shadowed by another on sys.path
+					# and an entry silently skipped are the two startup failures an operator cannot
+					# debug from the logs; this line answers the first.
+					origin = getattr(module, "__file__", None) or "an unknown location"
+					self.LOGGER.info(f"{base_class.__name__} {config_entry["name"]} created from {origin}")
 					self.LOGGER.debug(f"{actual_class=}")
 				else:
 					self.LOGGER.error(f"{actual_class} is not a subclass of {base_class.__name__}")
@@ -165,6 +172,31 @@ class Main:
 				self.LOGGER.error(f"{base_class.__name__} {config_entry} not found : {e}")
 			except TypeError as e:
 				self.LOGGER.error(f"{base_class.__name__} {config_entry} could not be instantiated : {e}")
+			# The two clauses below are this boundary's half of the rule Connector.deliver() applies
+			# at the read boundary: narrow where the frame inside the `try` is ours, broad where it is
+			# a plugin's. Everything between import_module and the constructor call is a stranger's
+			# code running at module scope, and the clauses above cover only the three failures that
+			# happen to be common. A bare ImportError (a *parent* of ModuleNotFoundError, so not
+			# caught above), a RuntimeError, a SyntaxError, a FileNotFoundError or a sys.exit() at
+			# module top ended the whole run instead — and devices are the first create_classes call,
+			# inside a try whose only handler is a finally, so one bad device module meant no
+			# connector, algorithm or storage backend was ever constructed either.
+			#
+			# SystemExit needs a clause of its own because it derives from BaseException, not from
+			# Exception. Not `except BaseException` wholesale: KeyboardInterrupt during startup is an
+			# operator action and must still terminate, and GeneratorExit is never ours to swallow.
+			#
+			# Both are appended *after* the narrow clauses rather than replacing them: every type named
+			# above is an Exception subclass, so a broad clause placed any earlier would shadow them
+			# and collapse "not found" and "could not be instantiated" into one undifferentiated
+			# message — a distinction tests/test_main.py asserts on.
+			except SystemExit as e:
+				self.LOGGER.error(f"{base_class.__name__} {config_entry} tried to exit the process : SystemExit({e.code!r}). A plugin returns or raises; only main decides when this run ends. Skipping this entry")
+			except Exception:
+				# .exception(), not .error(f"...: {e}"): this clause exists for the failure nobody
+				# predicted, and str() on a KeyError renders as a bare quoted key — no type name and
+				# no traceback, the least debuggable line in the file for the case that needs it most.
+				self.LOGGER.exception(f"{base_class.__name__} {config_entry} raised while loading, skipping this entry")
 		self.LOGGER.debug(f"{classes=}")
 		return classes
 

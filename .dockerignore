@@ -1,10 +1,15 @@
-.git
+# `**/` on both, because a bare pattern here is anchored to the context root. A plugin
+# cloned into connectors/<vendor>/ brings its own .git, which would otherwise be baked
+# into every locally built image; nested __pycache__ directories likewise survived the
+# bare rule below. `**/` matches zero or more segments, so the root copies are still
+# excluded.
+**/.git
 .gitignore
 .idea
 .venv
 .claude
 .pytest_cache
-__pycache__
+**/__pycache__
 data/
 config.json
 config.*.json
@@ -14,6 +19,12 @@ config.*.json
 *.md
 tests/
 requirements-dev.txt
+# The test kit, for the same reason as tests/ above: api/testing.py imports unittest.mock
+# and api/conformance.py imports jsonschema to check schemas rather than config, and the
+# only thing that imports either is a test suite this image does not carry. They stay in
+# git — a plugin author clones the repository, they do not pull the image.
+api/testing.py
+api/conformance.py
 # examples/ itself stays in the image (~200 KB), so that
 # `docker compose run --rm ems --config examples/auto_toggle/config.json` is a working
 # demo inside the container. Only the two parts that exist to serve the test suite are

@@ -36,8 +36,49 @@ OBIS_ALIASES: dict[str, str] = {
 	"0-1:24.4.0": "gas_valve_state",
 }
 
+# Distinguishes "called with one argument" from "called with two, the second of which is
+# None" — see `receive_mqtt`. A module-level object, because `None` is a value a caller can
+# legitimately pass and therefore cannot double as the absence of one.
+_NO_PAYLOAD = object()
+
 
 class P1(Device, EnergyMeter, MetricSource):
+	# The one transport that can carry a DSMR telegram to this device, and therefore the one
+	# this device serves. A `pseudo` connector declaring `emulates: "mqtt"` reaches here as
+	# "mqtt" — Config resolves that before injecting it — so a replay is covered by this entry
+	# and needs no branch of its own.
+	#
+	# There are deliberately **no defaults** behind it: no default topic, no default
+	# subscription, no default routing pattern. A P1 has only addressing options, and there is
+	# no standard P1-over-MQTT topic — dsmr2mqtt, Tasmota's `tele/<name>/SENSOR`, HomeWizard and
+	# every hand-rolled ESP8266 reader choose their own, and the operator chooses again on top.
+	# A synthesised default would therefore not fail loudly; it would compile a routing regex
+	# that matches a *different* meter's telegram on the same broker and file its readings under
+	# this device's name. `receive_mqtt` already states the principle for a payload — losing a
+	# sample is acceptable, inventing one is not — and it holds the same way for a reading
+	# attributed to the wrong meter. So the config's values are used verbatim, or nothing is.
+	#
+	# This is why `devices/lora.py`'s `profile` idiom does not transfer. That one defaults
+	# *interpretation* — where a payload sits inside ChirpStack's uplink envelope is a vendor
+	# fact, identical in every deployment, so a wrong guess is wrong everywhere and loudly.
+	# `connectors/lorawan.py` and `devices/lora_switch.py` both refuse to default *addressing*
+	# for exactly the reason above, and addressing is all a P1 has. Its "profile" already
+	# exists, is called `OBISParser`, and is hardcoded because DSMR has one.
+	SUPPORTED_PROTOCOLS = ("mqtt",)
+
+	PROTOCOL_REFUSAL = "a P1 meter carries a raw DSMR telegram, which reaches a device over 'mqtt'"
+
+	# Both LoRa transports get the same sentence, and it earns its place: a generic message
+	# could not tell an operator that the limit is arithmetic rather than a missing feature.
+	# A DSMR telegram is roughly 700-1000 bytes; the largest LoRaWAN application payload is
+	# 51 bytes at SF12 and 222 at SF7, so there is no data rate at which one fits. A "P1 over
+	# LoRa" gateway sends a *summary* — a different payload with a different schema — which is
+	# why the fix is a different device kind and not a different option.
+	UNSERVABLE_PROTOCOLS = {
+		"lora": "a telegram is 700-1000 bytes against a 51-222 byte LoRaWAN payload, so no data rate carries one; a 'P1 over LoRa' gateway sends a summary instead, which is a different schema. Use kind 'lora' with a field map",
+		"lorawan": "a telegram is 700-1000 bytes against a 51-222 byte LoRaWAN payload, so no data rate carries one; a 'P1 over LoRa' gateway sends a summary instead, which is a different schema. Use kind 'lora' with a field map",
+	}
+
 	PARSER: Parser
 
 	@override
@@ -45,13 +86,6 @@ class P1(Device, EnergyMeter, MetricSource):
 		super().__init__(name, connector_options, listener_options, controller_options)
 		self.PARSER = OBISParser()
 		self._parse_failing = False
-
-	# TODO: depending on what connector is used and if options are specified and passed from the config, either :
-	# - use the known defaults for the connector but with overriding options
-	# - use the known defaults for the connector
-	# - use only the options passed from the config if the connector doesn't have defaults
-	# - log an error telling it's not implemented and raise an exception to prevent the device from being created
-	# note : idk about the exception, i might find another way because handling exceptions is quite some gymnastics, ideally i'd prevent it from happening even earlier
 
 	def update_data(self, data: dict[str, Any]) -> None:
 		self.LOGGER.info(f"Updated data for {self.name}")
@@ -118,18 +152,44 @@ class P1(Device, EnergyMeter, MetricSource):
 
 	@override
 	def receive(self, *args, **kwargs) -> Optional[bool]:
-		match self.connector_options["protocol"]:
-			case "mqtt":
-				return self.receive_mqtt(*args, **kwargs)
-			case "lora":
-				return self.receive_lora(*args, **kwargs)
-			case _:
-				self.LOGGER.error(f"Unknown protocol {self.connector_options['protocol']} for {self.name}")
-				self.LOGGER.debug(f"{self.connector_options=}, {args=}, {kwargs=}")
-				raise NotImplementedError(f"Protocol {self.connector_options['protocol']} not implemented for {self.name}")
+		"""Refuse a protocol this device cannot serve, then parse.
 
-	def receive_mqtt(self, topic: str, payload: str) -> bool:
-		parsed = self.PARSER.parse(payload)
+		There is no `match` here and no `raise`. The refusal is `Device`'s — see
+		`refuse_unserved_protocol`, and `SUPPORTED_PROTOCOLS` above for what this device
+		claims — and returning False produces a gap rather than an invented reading, which is
+		`Device.receive`'s documented contract for a payload that yielded nothing. The ERROR
+		an operator acts on was already logged once, at construction.
+		"""
+		if self.refuse_unserved_protocol(*args, **kwargs):
+			return False
+		return self.receive_mqtt(*args, **kwargs)
+
+	def receive_mqtt(self, payload_or_topic: str, payload: Any = _NO_PAYLOAD) -> bool:
+		"""Parse a telegram, whether or not the caller passed a topic alongside it.
+
+		Both arities, because `PseudoConnector` chooses between them per row: a replay row
+		with a non-empty `topic` column calls `receive(topic, payload)` and one without calls
+		`receive(payload)`. This accepted only the two-argument form, so a topic-less row
+		produced a `TypeError` that the replay loop caught and logged as a bad entry — one
+		ERROR per row, no readings, and a gap indistinguishable from a device that was never
+		wired. CONTRIBUTING.md's device recipe states the rule ("accept **both** arities even
+		if your connector only ever sends one"), and `devices/modbus_meter.py` and
+		`devices/lora.py` both already guard it.
+
+		A sentinel rather than `payload is None`, because the two are not the same question.
+		`csv.DictReader` pads a short row with `None`, so a replay line truncated after its
+		`topic` column reaches here as `receive_mqtt(topic, None)` — and reading that as the
+		one-argument form would parse the *topic* as a telegram and blame the meter for an
+		unreadable one. The row is malformed, not the meter.
+
+		The topic is not read. Routing happened in the connector, against
+		`listener_options.pattern`, before this was called.
+		"""
+		telegram = payload_or_topic if payload is _NO_PAYLOAD else payload
+		if not isinstance(telegram, str):
+			self.LOGGER.warning(f"No telegram in the payload handed to {self.name}, nothing to parse")
+			return False
+		parsed = self.PARSER.parse(telegram)
 		if not parsed:
 			# Keep the last good reading. Assigning the empty result would turn an
 			# unreadable telegram — a CRC error on a noisy line is routine — into a
@@ -149,29 +209,11 @@ class P1(Device, EnergyMeter, MetricSource):
 		self.LOGGER.debug(f"{self.data=}")
 		return True
 
-	def receive_lora(self, *args, **kwargs) -> bool:
-		"""A P1 telegram cannot cross a LoRa link, and that is permanent rather than pending.
-
-		A DSMR telegram is roughly 700-1000 bytes. The largest LoRaWAN application payload is
-		51 bytes at SF12 and 222 at SF7, so there is no data rate at which one fits — a
-		"P1 over LoRa" gateway sends a *summary*, which is a different payload with a
-		different schema. Use `devices/lora.py` with a field map for it.
-
-		Kept as a branch returning False rather than deleted, deliberately: `case _` raises
-		`NotImplementedError`, and `MQTTConnector._receive_and_notify` has no try/except, so
-		that exception would die on a bare daemon thread through `threading.excepthook`
-		instead of being logged against the device. This says the same thing where an
-		operator will actually see it, and produces a gap rather than an invented reading.
-		"""
-		if not self._parse_failing:
-			self._parse_failing = True
-			self.LOGGER.error(
-				f"{self.name} is a p1 device on the 'lora' protocol, which cannot carry a telegram "
-				f"(700-1000 bytes against a 51-222 byte LoRaWAN payload). Use kind 'lora' with a "
-				f"field map instead; this device will never produce a reading."
-			)
-		return False
-
-	def control_mqtt(self, action: str) -> None:
-		self.LOGGER.info(f"Controlled {self.name} with action {action}")
-		self.control(action)
+	def control_mqtt(self, action: str) -> bool:
+		# Report what happened, not what was attempted. A P1 meter is never writable, so
+		# `control` always refuses and the old unconditional "Controlled ..." line was a
+		# claim this method has never once been able to make.
+		accepted = self.control(action)
+		if accepted:
+			self.LOGGER.info(f"Controlled {self.name} with action {action}")
+		return accepted

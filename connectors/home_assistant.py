@@ -143,7 +143,9 @@ class HomeAssistantConnector(Connector):
 				self._receive_loop()
 			except (WebSocketException, OSError) as e:
 				# Narrow on purpose: a genuine bug (TypeError, AttributeError) must still
-				# reach the supervisor with its traceback, which is what it is for.
+				# reach the supervisor with its traceback, which is what it is for. It can
+				# stay narrow because the only foreign frame this would otherwise catch —
+				# a device's — is caught one level down by `Connector.deliver`.
 				if not self.is_stopping():
 					self.LOGGER.warning(f"Home Assistant session on {self.url} ended ({e}); reconnecting in {backoff:g}s")
 			finally:
@@ -310,13 +312,12 @@ class HomeAssistantConnector(Connector):
 		# replay path are byte-identical — PseudoConnector replays two strings from a CSV.
 		payload = dumps(state)
 		for device in devices:
-			try:
-				accepted = device.receive(entity_id, payload)
-				self.on_device_data_received(device, accepted)
-			except Exception as e:
-				# One misbehaving device must not end the session for the others; the
-				# supervisor would restart the whole connector and lose the subscription.
-				self.LOGGER.error(f"Error handling '{entity_id}' for '{device.name}': {e}")
+			# The guard this used to carry inline now lives in `Connector.deliver`, which also
+			# rate-limits the repeat and logs the traceback. The reasoning it carried — one
+			# misbehaving device must not end the session for the others, because the
+			# supervisor would restart the whole connector and lose the subscription — is in
+			# that docstring.
+			self.deliver(device, entity_id, payload)
 
 	@override
 	def send(self, device: Device, payload: str) -> None:

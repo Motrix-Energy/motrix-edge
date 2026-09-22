@@ -46,11 +46,13 @@ class SupervisedWorker:
 	A restart re-invokes the target inside the *same* thread, so the thread name
 	stays stable and callers keep a handle whose identity survives restarts.
 
-	The two outcomes are deliberately distinguished:
+	The three outcomes are deliberately distinguished:
 	- the target **raises** — logged as ERROR with its traceback, then restarted
 	  per policy;
 	- the target **returns** — a normal completion (a finished replay, a stub
-	  connector, an idle poller), logged as INFO and never restarted.
+	  connector, an idle poller), logged as INFO and never restarted;
+	- the target **exits** — a library calling sys.exit() on a worker thread,
+	  logged as CRITICAL and deliberately *not* restarted. See `_run`.
 	"""
 	name: str
 	policy: RestartPolicy
@@ -70,8 +72,14 @@ class SupervisedWorker:
 		self._thread = Thread(target=self._run, name=self.name, daemon=True)
 		self.restarts = 0
 		self.crashes = 0
-		# `_finished` is set on every exit path — a clean return, a disabled restart
-		# policy, an exhausted restart budget, a stop during backoff. From outside, no
+		# `_finished` is set from a `finally` in `_run`, which is the only construction that
+		# covers every exit path: the six the loop takes deliberately (a clean return, a
+		# SystemExit, a crash during shutdown, a disabled restart policy, an exhausted restart
+		# budget, a stop during backoff) and the BaseException that unwinds straight through it.
+		# A bare `self._finished.set()` after the loop covered only the first six, so a worker
+		# whose target called sys.exit() left it clear forever — and main's
+		# `all(worker.is_finished())` then polled a connector that would never finish, leaving
+		# the EMS neither restarting nor exiting until SIGTERM. From outside, no
 		# combination of `restarts`/`crashes`/`policy` separates them: a policy with
 		# restart disabled breaks with `restarts == 0`, and a worker that crashed three
 		# times before returning normally has `crashes > 0`. This flag is the only honest
@@ -83,43 +91,60 @@ class SupervisedWorker:
 
 	def _run(self) -> None:
 		delay = self.policy.backoff_seconds
-		while True:
-			try:
-				self._target()
-			except Exception:
-				self.crashes += 1
-				# Loud, and through the configured logger — the default
-				# threading.excepthook would bypass it and print to stderr
-				self.LOGGER.exception(f"Worker '{self.name}' crashed")
-			else:
-				self.LOGGER.info(f"Worker '{self.name}' finished")
-				self.completed_cleanly = True
-				break
-			if self._stop_event.is_set():
-				self.LOGGER.info(f"Worker '{self.name}' crashed during shutdown, not restarting")
-				break
-			if not self.policy.enabled:
-				self.LOGGER.critical(f"Worker '{self.name}' is down and restart is disabled")
-				break
-			if self.restarts >= self.policy.max_restarts:
-				self.LOGGER.critical(
-					f"Worker '{self.name}' crashed {self.crashes} time(s) and reached the restart limit "
-					f"({self.policy.max_restarts}); giving up"
-				)
-				break
-			self.restarts += 1
-			self.LOGGER.warning(f"Restarting worker '{self.name}' in {delay:g}s ({self.restarts}/{self.policy.max_restarts})")
-			if self._stop_event.wait(delay):  # interruptible backoff
-				self.LOGGER.info(f"Worker '{self.name}' stopped during backoff, not restarting")
-				break
-			delay = min(delay * 2, self.policy.max_backoff_seconds)
-		self._finished.set()
+		# The whole loop sits inside the try: `_finished` must be set however this method
+		# leaves, including by a BaseException that nothing here catches.
+		try:
+			while True:
+				try:
+					self._target()
+				except SystemExit as e:
+					self.crashes += 1
+					# A give-up, not a restart, and the distinction is load-bearing:
+					# services/rest_api.py converts uvicorn's sys.exit() into a RuntimeError
+					# precisely so a port that will not bind earns the restart a crash earns.
+					# Were this branch to restart as well, that conversion would buy nothing
+					# and become dead code. Counted as a crash so /workers reports the same
+					# numbers for both paths.
+					self.LOGGER.critical(
+						f"Worker '{self.name}' exited with SystemExit({e.code!r}) instead of returning; "
+						f"not restarting. A worker returns or raises — only main decides when this run ends"
+					)
+					break
+				except Exception:
+					self.crashes += 1
+					# Loud, and through the configured logger — the default
+					# threading.excepthook would bypass it and print to stderr
+					self.LOGGER.exception(f"Worker '{self.name}' crashed")
+				else:
+					self.LOGGER.info(f"Worker '{self.name}' finished")
+					self.completed_cleanly = True
+					break
+				if self._stop_event.is_set():
+					self.LOGGER.info(f"Worker '{self.name}' crashed during shutdown, not restarting")
+					break
+				if not self.policy.enabled:
+					self.LOGGER.critical(f"Worker '{self.name}' is down and restart is disabled")
+					break
+				if self.restarts >= self.policy.max_restarts:
+					self.LOGGER.critical(
+						f"Worker '{self.name}' crashed {self.crashes} time(s) and reached the restart limit "
+						f"({self.policy.max_restarts}); giving up"
+					)
+					break
+				self.restarts += 1
+				self.LOGGER.warning(f"Restarting worker '{self.name}' in {delay:g}s ({self.restarts}/{self.policy.max_restarts})")
+				if self._stop_event.wait(delay):  # interruptible backoff
+					self.LOGGER.info(f"Worker '{self.name}' stopped during backoff, not restarting")
+					break
+				delay = min(delay * 2, self.policy.max_backoff_seconds)
+		finally:
+			self._finished.set()
 
 	def is_alive(self) -> bool:
 		return self._thread.is_alive()
 
 	def is_finished(self) -> bool:
-		"""True once the worker returned, gave up, or was stopped — restarts excluded."""
+		"""True once the worker returned, exited, gave up, or was stopped — restarts excluded."""
 		return self._finished.is_set()
 
 	def request_stop(self) -> None:

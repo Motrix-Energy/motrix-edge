@@ -1,6 +1,7 @@
 import logging
-from unittest.mock import MagicMock
+from unittest.mock import MagicMock, patch
 
+import pytest
 import requests
 from requests.auth import HTTPBasicAuth
 
@@ -23,32 +24,58 @@ def _response(text: str = "{}", status_code: int = 200) -> MagicMock:
     return response
 
 
+def stub_sessions(factory):
+    """Patch requests.Session where http_api constructs one; `factory()` supplies each.
+
+    Patched at the constructor rather than by replacing _build_session(), because that seam
+    is itself what these tests assert on: stubbing it would let a connector that never calls
+    it — the precise defect — fall through to a real Session, spin the poll loop against a
+    hostname that does not resolve, and hang instead of failing. Build the connector inside
+    the context, so a session wrongly built in __init__ is captured too.
+    """
+    return patch("connectors.http_api.requests.Session", side_effect=factory)
+
+
 class TestSessionSetup:
-    """Constructor wiring onto the requests.Session built in __init__."""
+    """Constructor wiring, asserted on the session _build_session() produces.
+
+    These read the built session rather than connector._session because the session is no
+    longer built in __init__: start() builds one per run and its finally closes it, so a
+    restart gets a live one. _build_session() is the seam that kept this wiring assertable
+    without driving the poll loop.
+    """
 
     def test_base_url_trailing_slash_stripped(self):
         connector = make_http_connector(base_url="http://api.example/")
         assert connector.base_url == "http://api.example"
 
+    def test_no_session_before_start(self):
+        assert make_http_connector()._session is None
+
     def test_headers_merged_into_session(self):
         connector = make_http_connector(headers={"X-Api-Key": "abc"})
-        assert connector._session.headers["X-Api-Key"] == "abc"
+        assert connector._build_session().headers["X-Api-Key"] == "abc"
 
     def test_basic_auth_applied_when_provided(self):
         connector = make_http_connector(auth={"username": "u", "password": "p"})
-        assert connector._session.auth == HTTPBasicAuth("u", "p")
+        assert connector._build_session().auth == HTTPBasicAuth("u", "p")
 
     def test_no_auth_when_absent(self):
         connector = make_http_connector()
-        assert connector._session.auth is None
+        assert connector._build_session().auth is None
 
     def test_verify_ssl_defaults_true(self):
         connector = make_http_connector()
-        assert connector._session.verify is True
+        assert connector._build_session().verify is True
 
     def test_verify_ssl_false_applied(self):
         connector = make_http_connector(verify_ssl=False)
-        assert connector._session.verify is False
+        assert connector._build_session().verify is False
+
+    def test_every_call_builds_a_new_session(self):
+        """The whole point: a restart must not be handed the session its predecessor closed."""
+        connector = make_http_connector()
+        assert connector._build_session() is not connector._build_session()
 
 
 class TestPollTasks:
@@ -203,6 +230,40 @@ class TestPollDevice:
         assert any("Device 'sensor' recovered" in r.message for r in caplog.records)
 
 
+class TestARaisingDevice:
+    """A device bug must not spend this connector's restart budget.
+
+    The try around the receive call catches only requests.* — a device's ValueError, KeyError
+    or TypeError escapes start(), whose only wrapper is try/finally with no except.
+    """
+
+    def _poll(self, connector, device):
+        connector.inject_devices({device.name: device})
+        connector._poll_device(connector._poll_tasks[0])
+
+    def _broken(self):
+        connector = make_http_connector()
+        connector._session = MagicMock()
+        connector._session.request.return_value = _response(text="payload-body")
+        device = StubDevice(name="sensor", listener_options={"endpoint": "/status"})
+        device.receive = MagicMock(side_effect=ValueError("bad payload"))
+        return connector, device
+
+    def test_a_raising_device_does_not_end_the_session(self, caplog):
+        connector, device = self._broken()
+        with caplog.at_level(logging.ERROR):
+            self._poll(connector, device)  # must not raise
+        assert any("raised on a payload" in r.message for r in caplog.records)
+
+    def test_a_raising_device_is_not_logged_as_recovered(self, caplog):
+        connector, device = self._broken()
+        connector._failed_devices.add(device.name)
+        with caplog.at_level(logging.INFO):
+            self._poll(connector, device)
+        assert not any("recovered" in r.message for r in caplog.records)
+        assert device.name in connector._failed_devices
+
+
 class TestStart:
     """start() returns cleanly when idle; the populated loop is infinite and not driven here."""
 
@@ -216,6 +277,83 @@ class TestStart:
 
         assert any("connector idle" in r.message for r in caplog.records)
         connector._session.request.assert_not_called()
+
+    def test_idle_return_builds_no_session(self):
+        """The idle guard runs before _build_session(), so nothing is opened to close."""
+        connector = make_http_connector()
+        connector._build_session = MagicMock()
+        connector.inject_devices({})
+
+        connector.start()
+
+        connector._build_session.assert_not_called()
+
+    def test_start_builds_and_closes_its_own_session(self):
+        session = MagicMock()
+        with stub_sessions(lambda: session):
+            connector = make_http_connector()
+            connector.inject_devices({"sensor": StubDevice(name="sensor", listener_options={"endpoint": "/status"})})
+            session.request.side_effect = lambda **kwargs: (connector.stop(), _response())[1]
+
+            connector.start()  # the single poll stops the loop from inside
+
+        session.request.assert_called_once()
+        session.close.assert_called_once()
+        assert connector._session is None, "the closed session must not be left on the connector"
+
+
+class TestRestart:
+    """A restarted run polls on a session of its own.
+
+    SupervisedWorker._run catches the crash and re-invokes the *same bound* start() on the
+    *same instance*, so whatever start()'s finally tore down has to be rebuilt by the next
+    run. With the session built once in __init__, run two polled through adapters close()
+    had already released — which urllib3 survives by rebuilding its connection pools lazily.
+    That accident, not a contract, is why this never showed up as a bug report.
+    """
+
+    def test_a_second_start_polls_on_a_live_session(self):
+        sessions: list[MagicMock] = []
+        polls: list[str] = []
+        run = {"n": 0}
+
+        def build_session() -> MagicMock:
+            session = MagicMock()
+
+            def poll(**kwargs):
+                # The session's own state *at poll time* is the whole assertion: a run
+                # polling through a session whose close() has already run is the defect.
+                polls.append("closed" if session.close.called else "live")
+                if run["n"] == 1:
+                    # Run one ends the way the restart path is actually reached — a bug that
+                    # is not a requests error escapes _poll_device's narrow handlers, and
+                    # start()'s finally closes the session on the way out.
+                    raise ValueError("a bug in the poll path")
+                connector.stop()  # run two: one poll is enough, let the loop wind down
+                return _response(text="payload-body")
+
+            session.request.side_effect = poll
+            sessions.append(session)
+            return session
+
+        with stub_sessions(build_session):
+            connector = make_http_connector()
+            device = StubDevice(name="sensor", listener_options={"endpoint": "/status"})
+            device.receive = MagicMock()
+            connector.inject_devices({"sensor": device})
+
+            run["n"] = 1
+            with pytest.raises(ValueError):
+                connector.start()
+            run["n"] = 2
+            connector.start()  # what SupervisedWorker._run does next: the same bound method
+
+        assert len(sessions) == 2, "the restart polled on run one's session instead of building its own"
+        assert sessions[0] is not sessions[1]
+        assert polls == ["live", "live"]
+        sessions[0].close.assert_called_once()  # run one's finally
+        sessions[1].close.assert_called_once()  # run two's, on a session of its own
+        device.receive.assert_called_once_with("payload-body")
 
 
 class TestSend:
@@ -275,6 +413,41 @@ class TestSend:
 
         assert any("has no controller_options.endpoint" in r.message for r in caplog.records)
         connector._session.request.assert_not_called()
+
+    def test_send_before_start_warns_and_drops_the_command(self, caplog):
+        """main constructs every worker before starting any of them, and send() runs on the
+        ALGORITHM's thread — so a command can arrive before start() built the session. The
+        raise this replaces was an AttributeError on None, counted as an algorithm crash."""
+        connector = make_http_connector()
+        device = StubDevice(
+            name="switch", is_writable=True, controller_options={"endpoint": "/cmd"},
+        )
+        assert connector._session is None
+
+        with caplog.at_level(logging.WARNING):
+            connector.send(device, "on")  # must not raise
+
+        assert any("Not connected yet" in r.message and "switch" in r.message for r in caplog.records)
+
+    def test_send_between_two_supervised_runs_is_dropped(self, caplog):
+        """start()'s finally clears the attribute as well as closing the session, so a
+        command landing during the supervisor's backoff is dropped rather than POSTed
+        through released adapters."""
+        session = MagicMock()
+        with stub_sessions(lambda: session):
+            connector = make_http_connector()
+            connector.inject_devices({"meter": StubDevice(name="meter", listener_options={"endpoint": "/m"})})
+            session.request.side_effect = lambda **kwargs: (connector.stop(), _response())[1]
+            connector.start()  # one poll, then the finally
+        device = StubDevice(
+            name="switch", is_writable=True, controller_options={"endpoint": "/cmd"},
+        )
+
+        with caplog.at_level(logging.WARNING):
+            connector.send(device, "on")
+
+        assert any("Not connected yet" in r.message for r in caplog.records)
+        session.request.assert_called_once()  # the poll only — no command on the closed session
 
     def test_send_http_error_warns(self, caplog):
         connector = make_http_connector()

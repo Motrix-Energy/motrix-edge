@@ -28,9 +28,10 @@ class InfluxDBBackend(StorageBackend):
 	batch_size points are pending — so close() is load-bearing here: it is what
 	flushes the tail of the run.
 
-	The client is built lazily on first write, never in __init__: main.create_classes
-	only catches TypeError/AttributeError/ModuleNotFoundError, so anything else
-	escaping a constructor takes the whole EMS down, and storage is optional.
+	The client is built lazily on first write, never in __init__: a constructor that
+	raises is contained by main.create_classes, but the entry is then skipped and the
+	run proceeds with no storage at all — silently, since storage is optional and zero
+	backends is a supported configuration. A first write that fails is visible.
 	"""
 	DEFAULT_URL = "http://localhost:8086"
 	DEFAULT_BUCKET = "motrix"

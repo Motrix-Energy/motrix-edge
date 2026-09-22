@@ -10,11 +10,13 @@ class HaSwitch(HaEntity, Switch):
 	A separate kind rather than a flag on `HaEntity`, because `Switch` is a *type* claim
 	that algorithms act on directly and cannot be made conditional per instance:
 	`algorithms/auto_toggle.py` selects actuators with `isinstance(device, Switch) and
-	device.data`, with no `is_writable` check — and `Algorithm.control_device` writes the
-	decision to storage *before* `Device.control` gets to refuse a non-writable device. A
-	read-only `sensor.living_room_temperature` subclassing `Switch` would therefore put a
-	row in `algorithm_decisions.csv` claiming an algorithm turned a thermometer on, every
-	tick: a wrong entry in the versioned storage contract, not merely a noisy log.
+	device.data`, with no `is_writable` check. A read-only `sensor.living_room_temperature`
+	subclassing `Switch` is therefore selected as an actuator and commanded on every tick.
+	`Device.control` refuses each command and `Algorithm.control_device` records nothing when it
+	does, so `algorithm_decisions.csv` stays honest — but the algorithm still believes it holds an
+	actuator, and goes on asking a device that can never move to turn on. The gate in
+	`control_device` protects the versioned storage contract; splitting the class is what stops the
+	algorithm making that mistake in the first place.
 
 	It inherits all of `HaEntity`'s parsing, because a Home Assistant switch reports its own
 	state on the same subscription that carries every other entity's.

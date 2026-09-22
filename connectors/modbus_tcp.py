@@ -142,13 +142,14 @@ class ModbusTcpConnector(Connector):
 
 		# Built in start(), never here. Three reasons: a stop() arriving before start()
 		# then has nothing to tear down (main wraps startup in try/finally, so shutdown()
-		# reaches connectors that never ran); main.create_classes catches only
-		# AttributeError/ModuleNotFoundError/TypeError, so anything a client constructor
-		# raises on a malformed host would take the process down before storage is even
-		# registered; and @patch("connectors.modbus_tcp.ModbusTcpClient") only works as a
+		# reaches connectors that never ran); a client constructor raising on a malformed
+		# host would lose this whole connector at load time rather than failing one poll
+		# and being restarted, so every device behind it would go dark for the run; and
+		# @patch("connectors.modbus_tcp.ModbusTcpClient") only works as a
 		# test seam if construction happens inside a method a test can drive.
-		# HttpApiConnector building its Session in __init__ is not a counter-precedent: a
-		# Session is a connection *pool* with no connect() and no half-built state.
+		# HttpApiConnector builds its Session in start() for the same reasons, plus one that
+		# bites harder there: start()'s finally closes it, so a session built once in
+		# __init__ left every restart polling through adapters close() had already released.
 		self._client = None
 		self._lock = Lock()
 		self._poll_tasks = []
@@ -342,7 +343,10 @@ class ModbusTcpConnector(Connector):
 				result = self._call(read.reader, read.address, count=read.count, device_id=read.device_id)
 			except (ModbusException, OSError) as e:
 				# Narrow on purpose, never bare Exception: a bug in our own code should
-				# reach the supervisor with its traceback, which is what it is for.
+				# reach the supervisor with its traceback, which is what it is for. It can
+				# stay narrow because no plugin frame is inside it — the device is called
+				# through `Connector.deliver`, which owns that boundary and is the only
+				# place a broad catch belongs.
 				transport_failed = True
 				if key not in self._failed_reads:
 					self._failed_reads.add(key)
@@ -378,9 +382,9 @@ class ModbusTcpConnector(Connector):
 			self._failed_devices.add(device.name)
 			return
 
-		accepted = device.receive(dumps({"blocks": blocks}))
-		self.on_device_data_received(device, accepted)
-		if device.name in self._failed_devices:
+		# Same gate as HttpApiConnector, same reason: a poll that reached the device and
+		# crashed inside it has recovered nothing.
+		if self.deliver(device, dumps({"blocks": blocks})) and device.name in self._failed_devices:
 			self.LOGGER.info(f"Device '{device.name}' recovered")
 			self._failed_devices.discard(device.name)
 

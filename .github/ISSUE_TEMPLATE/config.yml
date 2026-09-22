@@ -6,6 +6,9 @@ contact_links:
   - name: Report a security vulnerability
     url: https://github.com/Motrix-Energy/motrix-edge/security/advisories/new
     about: Privately, never as a public issue. Read SECURITY.md first for what is in scope.
+  - name: A community plugin is misbehaving
+    url: https://github.com/topics/motrix-edge-plugin
+    about: Plugins published outside this repository are maintained by their authors — open the issue there. If the fault is in the loader or the API, it belongs here.
   - name: Something wrong in the viewer
     url: https://github.com/Motrix-Energy/motrix-edge-view/issues
     about: Charts, the timeline, the single-file build — anything that reads the CSVs rather than writes them.

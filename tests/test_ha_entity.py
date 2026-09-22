@@ -42,9 +42,31 @@ class TestReceive:
         assert entity.receive(state("23.4")) is True
         assert entity.data["entity_id"] == "sensor.temperature"
 
-    def test_unknown_protocol_raises(self):
-        with pytest.raises(NotImplementedError):
-            make_entity(protocol="smoke_signals").receive("x", state())
+    def test_an_unserved_protocol_is_refused_rather_than_raised(self):
+        device = make_entity(protocol="smoke_signals")
+        assert device.receive("x", state()) is False
+        assert device.data == {}
+
+    def test_the_refusal_is_reported_once_at_construction(self, caplog):
+        with caplog.at_level(logging.ERROR):
+            device = make_entity(protocol="smoke_signals")
+        errors = [r for r in caplog.records if r.levelname == "ERROR"]
+        assert len(errors) == 1, "an operator hears this once at startup, not once per message"
+        assert "smoke_signals" in errors[0].message
+        assert "websocket" in errors[0].message
+
+        caplog.clear()
+        with caplog.at_level(logging.ERROR):
+            for _ in range(5):
+                device.receive("x", state())
+        assert [r for r in caplog.records if r.levelname == "ERROR"] == []
+
+    def test_mqtt_is_refused_with_the_statestream_reason(self, caplog):
+        # The near miss worth its own sentence: HA does speak MQTT, but statestream publishes
+        # a bare string where this device parses the state object.
+        with caplog.at_level(logging.ERROR):
+            make_entity(protocol="mqtt")
+        assert any("statestream" in r.message for r in caplog.records)
 
     def test_attributes_are_kept(self):
         entity = make_entity()
@@ -248,9 +270,9 @@ class TestHaSwitch:
         assert switch.is_writable is True
 
     def test_a_plain_entity_is_not_a_switch(self):
-        """Load-bearing: Algorithm.control_device writes the decision to storage BEFORE
-        Device.control refuses a non-writable device, so a thermometer subclassing Switch
-        would put a false row in algorithm_decisions.csv on every tick."""
+        """Load-bearing, and the reasoning lives in devices/ha_switch.py: `Switch` is a
+        class-level type claim, so a read-only class inheriting it is selected as an actuator
+        by every algorithm that looks for one."""
         assert not isinstance(make_entity(), Switch)
         assert make_entity().is_writable is False
 

@@ -188,8 +188,8 @@ class TestConstruction:
 
     @pytest.mark.parametrize("junk", ["abc", [], {}, -1, 3.7, object()])
     def test_junk_numeric_options_never_raise(self, junk):
-        # main.create_classes only catches TypeError/AttributeError/ModuleNotFoundError,
-        # so anything else escaping __init__ takes the whole EMS down.
+        # A raise out of __init__ is contained by main.create_classes, but the backend is
+        # then skipped and the run records nothing — silently, since storage is optional.
         assert make_backend(batch_size=junk).batch_size > 0
 
     def test_empty_and_none_static_tags_are_dropped(self):
@@ -668,7 +668,8 @@ class TestClose:
         client.close.assert_called_once()
 
     def test_write_after_close_is_dropped_and_warns_once(self, MockClient, caplog):
-        # MQTT spawns untracked daemon threads, so late writers are expected.
+        # MQTT's dispatch threads are daemons the shutdown join may abandon, so late
+        # writers are expected.
         backend = make_backend()
         _, write_api = write_once(backend, MockClient)
         backend.close()
