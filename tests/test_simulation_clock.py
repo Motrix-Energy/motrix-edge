@@ -87,8 +87,9 @@ class TestParticipants:
         assert clock.wait_for_step("algo", 0.5) == Step(generation=1, time=T0)
 
     def test_re_joining_after_leaving_registers_afresh(self):
-        """The supervisor restarts a crashed algorithm; it is not answerable for the
-        step it died on."""
+        """A caller re-entering loop() after a clean exit or retire() joins at the current
+        generation, answerable for no step published before. (A crash does not leave the
+        barrier, so a supervisor restart never takes this path: it re-joins as a no-op.)"""
         clock = SimulationClock()
         clock.join("algo")
         clock.publish_step(T0)
@@ -190,7 +191,7 @@ class TestBarrier:
         assert clock.wait_for_completion(0.05, NEVER_STOPPING) == ["slow_one", "slow_two"]
 
     def test_leaving_releases_the_barrier(self):
-        # A crashing algorithm is restarted by the supervisor; it must not strand the replay.
+        # An algorithm that returns, or is retired once no restart is coming, must not strand the replay.
         clock = SimulationClock()
         clock.join("algo")
         clock.publish_step(T0)

@@ -53,6 +53,9 @@ class SupervisedWorker:
 	  connector, an idle poller), logged as INFO and never restarted;
 	- the target **exits** — a library calling sys.exit() on a worker thread,
 	  logged as CRITICAL and deliberately *not* restarted. See `_run`.
+
+	Whichever it is, the worker is told once that it will not run again: `retire()` is
+	called if it has one (see `_retire`). Never between a crash and its restart.
 	"""
 	name: str
 	policy: RestartPolicy
@@ -138,7 +141,34 @@ class SupervisedWorker:
 					break
 				delay = min(delay * 2, self.policy.max_backoff_seconds)
 		finally:
-			self._finished.set()
+			# Retired before finished, so anything that waits on `is_finished()` sees a worker
+			# that has already released what it held — and finished however retiring went: a
+			# retire() raising a BaseException still unwinds the thread, but never past this set.
+			try:
+				self._retire()
+			finally:
+				self._finished.set()
+
+	def _retire(self) -> None:
+		"""Tell the worker it will not run again: call its `retire()`, if it has one.
+
+		Reached once, from `_run`'s `finally`, on every way out — a clean return, a
+		SystemExit, a crash during shutdown, a disabled policy, a spent budget, a stop during
+		backoff — and never between a crash and its restart, which is the whole point. An
+		algorithm stays a participant of the replay barrier through a crash and its backoff,
+		so a backtest waits for the restart instead of running ahead; `Algorithm.retire()` is
+		what finally releases the replay when no restart is coming.
+
+		Duck-typed like `stop()`: a worker with nothing to release declares nothing. A raising
+		`retire()` is logged and does not keep the worker from being marked finished.
+		"""
+		try:
+			# Inside the try: a `retire` property is plugin code too.
+			retire = getattr(self.worker, "retire", None)
+			if callable(retire):
+				retire()
+		except Exception:
+			self.LOGGER.exception(f"Worker '{self.name}' raised while retiring")
 
 	def is_alive(self) -> bool:
 		return self._thread.is_alive()

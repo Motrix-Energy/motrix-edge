@@ -167,7 +167,9 @@ def write_replay(path, rows: Sequence[Sequence[Any]], quoted: bool = False) -> s
 	an embedded CRLF — which the plain join cannot express. The unquoted form is kept
 	because it is what a hand-written replay file actually looks like.
 	"""
-	with open(path, "w", newline="") as f:
+	# UTF-8 because that is what connectors/pseudo.py reads a replay as; the platform default
+	# would write a non-ASCII payload the replay then cannot decode, on Windows only.
+	with open(path, "w", newline="", encoding="utf-8") as f:
 		if quoted:
 			writer = csv.writer(f)
 			writer.writerow(REPLAY_HEADERS)

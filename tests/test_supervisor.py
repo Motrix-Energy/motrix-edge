@@ -147,6 +147,130 @@ class TestCrashHandling:
         assert any("restart is disabled" in r.message for r in caplog.records if r.levelno == logging.CRITICAL)
 
 
+
+class RetiringWorker(StubWorker):
+    """A StubWorker that records, in order, every run and the retire() notice."""
+
+    def __init__(self, behaviour, name="retiring_worker", raise_on_retire=False):
+        super().__init__(behaviour, name=name)
+        self.events: list[str] = []
+        self.raise_on_retire = raise_on_retire
+
+    def run(self) -> None:
+        self.events.append(f"run {self.calls + 1}")
+        super().run()
+
+    def retire(self) -> None:
+        self.events.append("retire")
+        if self.raise_on_retire:
+            raise RuntimeError("retire failed")
+
+
+def make_retiring(behaviour, policy=FAST, **kwargs) -> tuple[RetiringWorker, SupervisedWorker]:
+    stub = RetiringWorker(behaviour, **kwargs)
+    return stub, SupervisedWorker(stub, "run", policy)
+
+
+def always_crash(worker):
+    raise RuntimeError("boom")
+
+
+class TestRetire:
+    """`retire()` tells a worker it will not run again: once, on every final exit, and
+    never between a crash and its restart.
+
+    An algorithm stays a participant of the replay barrier through a crash and its backoff
+    so that a backtest waits for the restart; this notice is what releases the replay when
+    no restart is coming. Called at a crash, it would let the replay run ahead through the
+    backoff again; never called, a give-up would hold the replay for good.
+    """
+
+    def test_a_clean_return_retires_once(self):
+        stub, supervised = make_retiring(lambda worker: None)
+        run_until_finished(supervised)
+        assert stub.events == ["run 1", "retire"]
+
+    def test_a_crash_that_is_restarted_is_not_a_retirement(self):
+        def crash_once(worker):
+            if worker.calls == 1:
+                raise RuntimeError("boom")
+
+        stub, supervised = make_retiring(crash_once)
+        run_until_finished(supervised)
+        assert stub.events == ["run 1", "run 2", "retire"]
+
+    def test_a_spent_restart_budget_retires_once(self):
+        policy = RestartPolicy(max_restarts=2, backoff_seconds=0.01, max_backoff_seconds=0.02)
+        stub, supervised = make_retiring(always_crash, policy=policy)
+        run_until_finished(supervised)
+        assert stub.events == ["run 1", "run 2", "run 3", "retire"]
+
+    def test_disabled_restarts_retire_at_the_first_crash(self):
+        stub, supervised = make_retiring(always_crash, policy=RestartPolicy(enabled=False))
+        run_until_finished(supervised)
+        assert stub.events == ["run 1", "retire"]
+
+    def test_a_system_exit_retires_once(self):
+        def exits(worker):
+            raise SystemExit(3)
+
+        stub, supervised = make_retiring(exits)
+        run_until_finished(supervised)
+        assert stub.events == ["run 1", "retire"]
+
+    def test_a_stop_during_backoff_retires_once(self):
+        crashed = Event()
+
+        def crash(worker):
+            crashed.set()
+            raise RuntimeError("boom")
+
+        stub, supervised = make_retiring(crash, policy=RestartPolicy(backoff_seconds=1.0))
+        supervised.start()
+        assert crashed.wait(2)
+        assert stub.events == ["run 1"]  # down, awaiting its restart: not retired yet
+        supervised.request_stop()
+        supervised.join(2)
+        assert supervised.is_finished()
+        assert stub.events == ["run 1", "retire"]
+
+    def test_a_raising_retire_is_logged_and_the_worker_still_finishes(self, caplog):
+        stub, supervised = make_retiring(lambda worker: None, raise_on_retire=True)
+        with caplog.at_level(logging.ERROR):
+            run_until_finished(supervised)
+        assert any("raised while retiring" in r.message for r in caplog.records)
+
+    # The SystemExit genuinely escapes the thread, which is fine; what is under test is
+    # that it no longer escapes past `_finished.set()`.
+    @pytest.mark.filterwarnings("ignore::pytest.PytestUnhandledThreadExceptionWarning")
+    def test_a_retire_that_exits_still_leaves_the_worker_finished(self):
+        """`_finished` is set from a `finally` so no way out of `_run` can leave main polling
+        a worker that will never finish; the retire() notice must not reopen that hole."""
+        class ExitingRetire(RetiringWorker):
+            def retire(self) -> None:
+                super().retire()
+                raise SystemExit(1)
+
+        stub = ExitingRetire(lambda worker: None)
+        supervised = SupervisedWorker(stub, "run", FAST)
+        supervised.start()
+        supervised.join(2.0)
+        assert not supervised.is_alive()
+        assert supervised.is_finished()
+        assert stub.events == ["run 1", "retire"]
+
+    def test_a_retire_property_that_raises_is_logged_and_the_worker_still_finishes(self, caplog):
+        class RaisingProperty(StubWorker):
+            @property
+            def retire(self):
+                raise RuntimeError("no retire for you")
+
+        supervised = SupervisedWorker(RaisingProperty(lambda worker: None), "run", FAST)
+        with caplog.at_level(logging.ERROR):
+            run_until_finished(supervised)
+        assert any("raised while retiring" in r.message for r in caplog.records)
+
+
 class TestStop:
     def test_request_stop_calls_worker_stop(self):
         def block_until_stopped(worker):

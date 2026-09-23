@@ -41,6 +41,9 @@ class Algorithm(Stoppable, ABC):
 	last_run_at: datetime | None = None
 	last_run_seconds: float | None = None
 	runs: int = 0
+	# Whether the loop() that crashed had already been handed a replay timestep, carried to
+	# the loop() the supervisor restarts. See the `stepped` local in loop().
+	_stepped_before_crash: bool = False
 
 	@abstractmethod
 	def __init__(self, name: str, devices_manager: DevicesAccess, delay_seconds: float = _DEFAULT_DELAY_SECONDS,
@@ -74,17 +77,32 @@ class Algorithm(Stoppable, ABC):
 		Two cadences, chosen per iteration: one step per committed replay timestep when
 		a replay connector drives the clock, and a `delay_seconds` wall-clock cadence
 		otherwise — so one `main()` backtests and runs live unchanged.
+
+		A crash does not give up the barrier. Returning — a stop, the end of a replay — leaves
+		it; raising keeps this algorithm a participant, so the replay waits at the next step
+		for the supervisor to restart `loop()` instead of running ahead through the backoff and
+		skipping, at `speed: 0`, however many steps that happened to take. A crash costs a
+		backtest time, never a timestep — while each backoff stays under the replay's
+		`step_timeout_seconds`, past which the replay advances, loudly. `retire()` is the way
+		out once no restart is coming.
 		"""
 		from simulation.clock import SimulationClock
 		clock = SimulationClock()
-		# Re-join: __init__ already registered us, but the supervisor restarts a crashed
-		# algorithm by re-entering loop() on the same object, and the previous run's
-		# `finally` deregistered it. Joining at the current generation is right — a
-		# restarted algorithm is not answerable for the step it died on.
+		# Normally a no-op: __init__ registered us, and a crash no longer deregisters, so a
+		# restarted loop() is still a participant — owing the step published while it was
+		# down, which it processes next. The step it died on was acknowledged below and is not
+		# re-run. The join matters only to a caller re-entering loop() after it left cleanly
+		# or retired, which joins at the current generation, answerable for nothing before.
 		clock.join(self.name)
 		# Whether this algorithm has processed at least one replay timestep. It is what
-		# separates "running live" from "was being replayed, and the replay ended".
-		stepped = False
+		# separates "running live" from "was being replayed, and the replay ended". A
+		# restart after a crash continues the same replay, so it inherits the answer: a crash on
+		# the final timestep otherwise restarted into a reset clock, took itself for live, and
+		# appended a wall-clock main() to the backtest — or, with another connector keeping the
+		# run alive, went on running live for good.
+		stepped = self._stepped_before_crash
+		self._stepped_before_crash = False
+		crashed = False
 		try:
 			self._wait_for_required_devices()
 			while not self.is_stopping():
@@ -94,8 +112,9 @@ class Algorithm(Stoppable, ABC):
 					try:
 						self._run_main()
 					finally:
-						# In a finally so a raising main() cannot strand the replay: the
-						# supervisor will restart us, but the backtest must keep moving.
+						# In a finally: the step main() raised on is finished, never re-run
+						# by the restart. The replay then publishes the next step and — this
+						# algorithm still being a participant — waits there for the restart.
 						clock.ack(self.name, step.generation)
 				elif clock.is_simulated():
 					continue  # between timesteps; the replay has not published the next one
@@ -112,9 +131,32 @@ class Algorithm(Stoppable, ABC):
 				else:
 					self._run_main()
 					self.wait_stop(max(0., self.delay_seconds - (self.last_run_seconds or 0.)))
+		except Exception:
+			# A crash, which the supervisor restarts: stay a participant through the backoff.
+			# Not BaseException — a SystemExit is never restarted, so it leaves like a return.
+			crashed = True
+			self._stepped_before_crash = stepped
+			raise
 		finally:
-			clock.leave(self.name)
+			if not crashed:
+				clock.leave(self.name)
 		self.LOGGER.info("Loop stopped")
+
+	def retire(self) -> None:
+		"""Leave the replay barrier for good: this algorithm will not step again.
+
+		`SupervisedWorker` calls it once it will not restart `loop()`. After a crash — the
+		restart budget is spent, restarts are disabled, the run is stopping (a crash during
+		shutdown), or it was stopped during the backoff — `loop()` raised without leaving, so
+		this is the leave. After a clean return or a SystemExit it is a harmless repeat of the
+		leave `loop()` already did.
+		Until then a crashed algorithm remains a participant and the replay waits for it,
+		`step_timeout_seconds` at most per step. A caller that runs `loop()` itself and gives
+		up after a crash must call this too, or the replay keeps waiting for it.
+		"""
+		from simulation.clock import SimulationClock
+		self._stepped_before_crash = False
+		SimulationClock().leave(self.name)
 
 	def _run_main(self) -> None:
 		"""One accounted invocation of main().

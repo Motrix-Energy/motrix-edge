@@ -18,6 +18,7 @@ from connectors.pseudo import PseudoConnector
 from devices.pseudo import Pseudo
 from devices_manager.devices_manager import DevicesManager
 from simulation.clock import SimulationClock
+from supervisor.supervisor import RestartPolicy, Supervisor
 from tests.conftest import make_pseudo, run_in_thread, wait_until, write_replay as write_replay_csv
 
 START = datetime(2024, 1, 15, 10, 0, 0)
@@ -276,3 +277,124 @@ class TestReplayEnd:
         assert clock.get_step_time() is None
         assert clock.get_event_time() is None
         assert clock.is_simulated() is False
+
+
+class CrashingAlgorithm(SteppingAlgorithm):
+    """Records every step it is handed, then raises on the ones listed in `crash_on`
+    (zero-based positions in the order it was handed them) — or on every step."""
+
+    def __init__(self, name, devices_manager, crash_on: set[int] | None = None, **kwargs):
+        super().__init__(name, devices_manager, **kwargs)
+        self.crash_on = crash_on
+        self.calls: list[datetime | None] = []  # every main(), replayed or wall-clock
+
+    def main(self) -> None:
+        self.calls.append(self.devices_manager.get_simulation_time())
+        super().main()
+        if self.devices_manager.get_simulation_time() is None:
+            return
+        if self.crash_on is None or len(self.steps) - 1 in self.crash_on:
+            raise RuntimeError(f"crash on step {len(self.steps) - 1}")
+
+
+def replay_under_supervision(connector, algorithm, policy, timeout: float = 10.0) -> None:
+    """Run the replay to its end with the algorithm supervised as main.py does, then stop."""
+    supervisor = Supervisor(policy)
+    supervisor.supervise(algorithm, "loop")
+    replay = run_in_thread(connector.start)
+    replay.join(timeout)
+    stranded = replay.is_alive()
+    supervisor.stop_all(timeout=5.0)
+    if stranded:
+        connector.stop()
+        replay.join(5.0)
+        pytest.fail("the replay never finished: a crashed algorithm stranded it")
+
+
+class TestACrashedAlgorithmIsWaitedFor:
+    """A crash costs a backtest time, never a timestep.
+
+    A crashing main() used to take the algorithm off the barrier until the supervisor
+    restarted it, so at speed 0 the replay ran on alone through the backoff and the
+    restarted algorithm resumed wherever the replay happened to be: how many timesteps it
+    never saw depended on wall-clock timing. It now stays a participant through the backoff,
+    the replay waits at the next timestep, and only a worker the supervisor gives up on
+    leaves — so a crash can hold a replay up but never strand it.
+    """
+
+    def test_no_timestep_is_skipped_across_a_crash(self, tmp_path, devices_manager, caplog):
+        moments = timesteps(6)
+        connector, _ = wire(write_replay(tmp_path / "r.csv", [(m, "a") for m in moments]), ["a"],
+                            step_timeout_seconds=10.0)
+        algo = CrashingAlgorithm("algo", devices_manager, crash_on={1})
+        # A backoff far longer than the rest of the replay takes at speed 0.
+        with caplog.at_level(logging.WARNING):
+            replay_under_supervision(connector, algo, RestartPolicy(backoff_seconds=0.5))
+
+        # Every timestep exactly once: the one it died on is not re-run, none is skipped.
+        assert algo.steps == moments
+        assert not any("did not finish step" in record.message for record in caplog.records)
+
+    def test_a_restart_budget_spent_on_every_step_does_not_strand_the_replay(self, tmp_path, devices_manager):
+        moments = timesteps(6)
+        connector, _ = wire(write_replay(tmp_path / "r.csv", [(m, "a") for m in moments]), ["a"],
+                            step_timeout_seconds=None)  # would wait forever for a participant that never leaves
+        algo = CrashingAlgorithm("algo", devices_manager)
+        replay_under_supervision(connector, algo, RestartPolicy(max_restarts=2, backoff_seconds=0.05))
+
+        # The first run and its two restarts each took the next timestep in turn; then the
+        # supervisor gave up, retired it, and the replay finished without it.
+        assert algo.steps == moments[:3]
+        assert "algo" not in SimulationClock().participants()
+
+    def test_disabled_restarts_release_the_replay_at_the_first_crash(self, tmp_path, devices_manager):
+        moments = timesteps(4)
+        connector, _ = wire(write_replay(tmp_path / "r.csv", [(m, "a") for m in moments]), ["a"],
+                            step_timeout_seconds=None)
+        algo = CrashingAlgorithm("algo", devices_manager, crash_on={0})
+        replay_under_supervision(connector, algo, RestartPolicy(enabled=False))
+        assert algo.steps == moments[:1]
+
+    def test_a_crashed_algorithm_is_a_participant_until_retired(self, tmp_path, devices_manager):
+        """The state the replay waits on, observed directly: down in its backoff, the
+        algorithm is still owed the next timestep."""
+        moments = timesteps(3)
+        connector, _ = wire(write_replay(tmp_path / "r.csv", [(m, "a") for m in moments]), ["a"],
+                            step_timeout_seconds=None)
+        algo = CrashingAlgorithm("algo", devices_manager, crash_on={0})
+        supervisor = Supervisor(RestartPolicy(backoff_seconds=30.0))  # stays down for the test
+        supervisor.supervise(algo, "loop")
+        replay = run_in_thread(connector.start)
+        try:
+            clock = SimulationClock()
+            assert wait_until(lambda: clock.generation() == 2, JOIN_TIMEOUT), "the replay did not publish the next step"
+            assert clock.pending() == ["algo"]  # the replay is waiting for the restart
+            assert replay.is_alive()
+        finally:
+            supervisor.stop_all(timeout=5.0)  # a stop during backoff: retired, and the replay released
+            replay.join(JOIN_TIMEOUT)
+        assert not replay.is_alive()
+        assert "algo" not in SimulationClock().participants()
+
+    def test_a_crash_on_the_final_timestep_adds_no_wall_clock_step(self, tmp_path, devices_manager):
+        """The restarted loop() continues the same replay, so it must know it was being
+        replayed. It used to start that bookkeeping afresh: restarting into the clock the
+        finished replay had reset, it took itself for live and ran one more main() stamped
+        with the wall clock — or, with another connector keeping main alive, ran live for good."""
+        moments = timesteps(4)
+        connector, _ = wire(write_replay(tmp_path / "r.csv", [(m, "a") for m in moments]), ["a"],
+                            step_timeout_seconds=10.0)
+        algo = CrashingAlgorithm("algo", devices_manager, crash_on={3})
+        supervisor = Supervisor(RestartPolicy(backoff_seconds=0.05))  # restarts before main would notice the end
+        worker = supervisor.supervise(algo, "loop")
+        try:
+            connector.start()
+            # The restart must find the replay over and return, not settle into a live cadence.
+            assert wait_until(worker.is_finished, JOIN_TIMEOUT), "the restarted algorithm kept running after the replay"
+        finally:
+            supervisor.stop_all(timeout=5.0)
+
+        assert algo.steps == moments
+        assert None not in algo.calls, "a main() ran on the wall clock after the replay ended"
+        assert worker.restarts == 1
+

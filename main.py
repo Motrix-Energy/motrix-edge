@@ -16,6 +16,7 @@ from api.storage_backend import StorageBackend
 from config.config import Config
 from config.log_format import make_handler
 from devices_manager.devices_manager import DevicesManager
+from simulation.clock import SimulationClock
 from storage_manager.storage_manager import StorageManager
 from supervisor.supervisor import RestartPolicy, Supervisor
 
@@ -156,7 +157,7 @@ class Main:
 					self.LOGGER.error(f"{base_class.__name__} {config_entry} not found : no class matching '{expected_class_name}' in module '{package}.{clazz}'")
 					continue
 				if issubclass(actual_class, base_class):
-					classes.append(actual_class(config_entry["name"], **arguments, **config_entry.get("options", {})))
+					classes.append(self._construct(actual_class, config_entry, arguments))
 					# getattr, not module.__file__: a namespace package has none, nor does a frozen or
 					# built-in module, and the bare access raises AttributeError — which THIS function
 					# catches four lines below and reports as "not found", turning a plugin that was
@@ -199,6 +200,31 @@ class Main:
 				self.LOGGER.exception(f"{base_class.__name__} {config_entry} raised while loading, skipping this entry")
 		self.LOGGER.debug(f"{classes=}")
 		return classes
+
+	@staticmethod
+	def _construct(actual_class: type, config_entry: dict, arguments: dict) -> Any:
+		"""Instantiate one plugin, withdrawing it from the replay barrier if its constructor raises.
+
+		`Algorithm.__init__` joins the lockstep barrier (`SimulationClock.join`) — on purpose,
+		on the main thread before any worker starts. A subclass that raises *after* its
+		`super().__init__()` (a data file it cannot read, an option it rejects) therefore left a
+		participant behind: `create_classes` logged the failure and skipped the entry, but the
+		replay went on waiting for an algorithm that did not exist — `step_timeout_seconds` on
+		every timestep, each one an ERROR or WARNING, and forever with `null`.
+
+		Whatever joined during a construction that raised leaves again, and nothing else: a
+		participant registered before this call, even one under the same name, is not this
+		entry's to withdraw. The exception itself propagates unchanged, to the clauses in
+		`create_classes` that decide how it is reported.
+		"""
+		clock = SimulationClock()
+		before = set(clock.participants())
+		try:
+			return actual_class(config_entry["name"], **arguments, **config_entry.get("options", {}))
+		except BaseException:
+			for name in set(clock.participants()) - before:
+				clock.leave(name)
+			raise
 
 
 if __name__ == '__main__':

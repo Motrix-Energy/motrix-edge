@@ -867,7 +867,11 @@ says the same thing to the person deciding whether to install yours.
   exponential backoff (`runtime`: `restart`, `max_restarts`, `backoff_seconds`,
   `max_backoff_seconds`); past the cap it logs CRITICAL and stays down. A method that **returns** is
   a clean completion and is never restarted. Keep that distinction: raise on failure, return when
-  genuinely done.
+  genuinely done. Once a worker will not run again — it returned, exited, or is past its restart
+  budget — the supervisor calls its `retire()` if it has one, exactly once, and never between a
+  crash and its restart. `Algorithm.retire()` leaves the replay barrier, which a crashed algorithm
+  otherwise keeps so the replay waits for its restart. The name is therefore reserved on every axis:
+  do not give a plugin a `retire` attribute meaning anything else.
 
 ## Style
 

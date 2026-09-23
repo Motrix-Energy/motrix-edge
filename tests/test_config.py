@@ -1072,3 +1072,72 @@ class TestConfigFormatVersion:
                 Config(file_path=path)
             offending = self._version_records(caplog)
             assert not offending, f"{os.path.basename(path)}: {offending}"
+
+
+class TestConfigReadsUtf8WhateverTheLocale:
+    """config.json, config.schema.json and every plugin schema are decoded as UTF-8.
+
+    They used to be opened with the platform default, which is the locale's codec: cp1252
+    on Windows. There every non-ASCII byte of a device name, topic or entity id decoded as
+    mojibake, silently — and that name is what storage then records the device under — while
+    a byte cp1252 leaves undefined (the second byte of "č" is 0x8D) crashed the plugin-schema
+    load at startup.
+
+    Linux CI runs a UTF-8 locale, where the old code passed by luck. So each test here puts
+    the Windows default back in place for the duration — an `encoding` the caller leaves out
+    becomes cp1252 — which makes a missing `encoding="utf-8"` fail on every platform.
+    """
+
+    NAME = "Pompe à chaleur — étage 1"
+    CONNECTOR = "Chaudière"
+
+    @pytest.fixture
+    def cp1252_default(self, monkeypatch):
+        """Open files the way a Windows locale does when no encoding is given."""
+        import builtins
+        import pathlib
+
+        import config.config as config_module
+
+        real_open = builtins.open
+        real_read_text = pathlib.Path.read_text
+
+        def locale_open(file, mode="r", buffering=-1, encoding=None, *args, **kwargs):
+            if "b" not in mode and encoding is None:
+                encoding = "cp1252"
+            return real_open(file, mode, buffering, encoding, *args, **kwargs)
+
+        def locale_read_text(self, encoding=None, *args, **kwargs):
+            return real_read_text(self, "cp1252" if encoding is None else encoding, *args, **kwargs)
+
+        # A module global shadows the builtin for config/config.py alone, so pytest's own
+        # file handling is untouched.
+        monkeypatch.setattr(config_module, "open", locale_open, raising=False)
+        monkeypatch.setattr(pathlib.Path, "read_text", locale_read_text)
+
+    def test_a_non_ascii_device_and_connector_name_survive(self, tmp_path, cp1252_default):
+        config = {
+            "connectors": [{"name": self.CONNECTOR, "protocol": "pseudo", "options": {"replay_file": "nonexistent.csv"}}],
+            "devices": [{"name": self.NAME, "kind": "pseudo", "options": {"connector_options": {"name": self.CONNECTOR}}}],
+        }
+        path = tmp_path / "config.json"
+        path.write_bytes(json.dumps(config, ensure_ascii=False).encode("utf-8"))
+        cfg = Config(file_path=str(path))
+        assert [device["name"] for device in cfg.devices] == [self.NAME]
+        assert [connector["name"] for connector in cfg.connectors] == [self.CONNECTOR]
+
+    def test_a_plugin_schema_with_a_byte_cp1252_cannot_decode_loads(self, tmp_path, cp1252_default):
+        comment = "Options du capteur de la chaudière — čerpadlo"
+        package = tmp_path / "utf8plugins"
+        package.mkdir()
+        (package / "__init__.py").write_text("")
+        (package / "sensor.schema.json").write_bytes(
+            json.dumps({"$comment": comment, "type": "object"}, ensure_ascii=False).encode("utf-8")
+        )
+        sys.path.insert(0, str(tmp_path))
+        try:
+            cfg = Config(file_path=_write_config(tmp_path, {"connectors": []}))
+            assert cfg._load_plugin_schema("utf8plugins", "sensor")["$comment"] == comment
+        finally:
+            sys.path.remove(str(tmp_path))
+            sys.modules.pop("utf8plugins", None)

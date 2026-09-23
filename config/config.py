@@ -83,13 +83,18 @@ class Config(metaclass=Singleton):
 	RUNTIME: dict[str, Any]
 
 	def __init__(self, file_path: path = "config.json") -> None:
+		# encoding="utf-8" on every read in this module, never the platform default. JSON is
+		# UTF-8 by definition, and the default is the locale's codec: cp1252 on Windows, where
+		# every non-ASCII byte of a device name, topic or entity id decoded as mojibake — which
+		# then went into storage as the device's name (docs/storage-format.md §2) — and a byte
+		# cp1252 leaves undefined, as in "č", crashed the plugin-schema load at startup.
 		try:
-			with open(file_path) as file:
+			with open(file_path, encoding="utf-8") as file:
 				config = load(file)
 		except FileNotFoundError:
 			config = {}
 		try:
-			with open("config.schema.json") as file:
+			with open("config.schema.json", encoding="utf-8") as file:
 				schema = load(file)
 		except FileNotFoundError:
 			schema = {}
@@ -326,7 +331,7 @@ class Config(metaclass=Singleton):
 			schema: Optional[dict] = None
 			if schema_file.is_file():
 				try:
-					schema = loads(schema_file.read_text())
+					schema = loads(schema_file.read_text(encoding="utf-8"))
 				except JSONDecodeError as e:
 					Config.warn(f"Invalid JSON in plugin schema '{package}/{relative}': {e}")
 			else:

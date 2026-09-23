@@ -1,6 +1,7 @@
 import logging
 import sys
 import textwrap
+from datetime import datetime, timezone
 from unittest.mock import patch
 
 import pytest
@@ -415,3 +416,104 @@ class TestOneBadPluginIsOneSkippedEntry:
         created = [r.message for r in caplog.records if "created from" in r.message]
         assert len(created) == 1
         assert "good.py" in created[0]
+
+
+BAD_ALGORITHMS = {
+    # Joins the barrier in Algorithm.__init__, then fails: the shape a data file it cannot
+    # read, or an option it rejects, takes in a real plugin.
+    "raises_after_joining.py": """
+        from api.algorithm import Algorithm
+
+        class RaisesAfterJoining(Algorithm):
+            def __init__(self, name, devices_manager, **kwargs):
+                super().__init__(name, devices_manager, **kwargs)
+                raise FileNotFoundError("data/forecast.csv")
+
+            def main(self):
+                super().main()
+    """,
+    # Fails before it ever joined. Nothing to withdraw.
+    "raises_before_joining.py": """
+        from api.algorithm import Algorithm
+
+        class RaisesBeforeJoining(Algorithm):
+            def __init__(self, name, devices_manager, **kwargs):
+                raise ValueError("rejected option")
+
+            def main(self):
+                super().main()
+    """,
+    "healthy.py": """
+        from api.algorithm import Algorithm
+
+        class Healthy(Algorithm):
+            def __init__(self, name, devices_manager, **kwargs):
+                super().__init__(name, devices_manager, **kwargs)
+
+            def main(self):
+                super().main()
+    """,
+}
+
+
+@pytest.fixture
+def bad_algorithms(tmp_path):
+    """An importable package of algorithms that fail on either side of joining the barrier."""
+    package = tmp_path / "badalgorithms"
+    package.mkdir()
+    (package / "__init__.py").write_text("")
+    for filename, body in BAD_ALGORITHMS.items():
+        (package / filename).write_text(textwrap.dedent(body).strip() + "\n")
+    sys.path.insert(0, str(tmp_path))
+    try:
+        yield "badalgorithms"
+    finally:
+        sys.path.remove(str(tmp_path))
+        for name in [m for m in sys.modules if m == "badalgorithms" or m.startswith("badalgorithms.")]:
+            del sys.modules[name]
+
+
+class TestAFailedAlgorithmLeavesTheBarrier:
+    """An algorithm whose constructor raised is not a participant the replay waits for.
+
+    `Algorithm.__init__` joins the lockstep barrier, so a subclass raising after its
+    `super().__init__()` used to leave a participant behind: the entry was skipped and
+    logged, and every timestep then waited `step_timeout_seconds` for an algorithm that
+    did not exist — forever with `step_timeout_seconds: null`.
+    """
+
+    @staticmethod
+    def _create(app, package, *modules):
+        config_list = [{"name": module, "class": module, "options": {}} for module in modules]
+        return app.create_classes(config_list, "class", package, Algorithm, arguments={"devices_manager": DevicesManager()})
+
+    def test_raising_after_joining_leaves_no_participant(self, app, bad_algorithms, caplog):
+        with caplog.at_level(logging.ERROR):
+            result = self._create(app, bad_algorithms, "raises_after_joining")
+        assert result == []
+        assert any("raised while loading" in record.message for record in caplog.records)
+        assert SimulationClock().participants() == []
+
+    def test_the_replay_is_not_held_by_it(self, app, bad_algorithms):
+        self._create(app, bad_algorithms, "raises_after_joining")
+        clock = SimulationClock()
+        clock.start_simulation()
+        clock.publish_step(datetime(2026, 1, 1, tzinfo=timezone.utc))
+        assert clock.wait_for_completion(0.2, lambda: False) == []
+
+    def test_raising_before_joining_is_still_one_skipped_entry(self, app, bad_algorithms):
+        assert self._create(app, bad_algorithms, "raises_before_joining") == []
+        assert SimulationClock().participants() == []
+
+    def test_a_healthy_algorithm_beside_it_stays_a_participant(self, app, bad_algorithms):
+        result = self._create(app, bad_algorithms, "raises_after_joining", "healthy", "raises_before_joining")
+        assert [algorithm.name for algorithm in result] == ["healthy"]
+        assert SimulationClock().participants() == ["healthy"]
+
+    def test_a_participant_that_joined_earlier_under_the_same_name_is_not_withdrawn(self, app, bad_algorithms):
+        """Only what joined during the failed construction leaves. The join of a name that
+        is already a participant is a no-op, so the earlier registration is not this
+        entry's to take away."""
+        SimulationClock().join("raises_after_joining")
+        self._create(app, bad_algorithms, "raises_after_joining")
+        assert SimulationClock().participants() == ["raises_after_joining"]
