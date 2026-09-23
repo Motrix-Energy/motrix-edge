@@ -733,9 +733,20 @@ motrix-edge-connector-solarvendor/
 	connectors/acme/solar.py
 	connectors/acme/solar.schema.json
 	tests/test_solar.py          # imports api.testing, runs api.conformance
+	conftest.py                  # finds a motrix-edge checkout
 	LICENSE                      # extensionless
 	README.md
 ```
+
+There is no template repository to fork, deliberately: this repository already ships 25 worked
+plugins that the suite keeps green forever, and a template with no CI against `main` would rot
+into teaching a layout that no longer loads. Copy the shipped plugin whose shape matches yours,
+the way the recipes above tell you to. The only thing you cannot copy from in here is the
+out-of-tree scaffolding — a `conftest.py` that finds a checkout and a CI job that clones it — and
+both are written out on the docs site's [Publishing a plugin](https://motrix-energy.github.io/contribute/publishing-plugins/)
+page. `tests/test_published_plugin.py` here is the executable proof that the convention works: it
+builds a vendor package in a temp directory and drives the real loader through it, on the
+connector, device and algorithm axes.
 
 Keep `LICENSE` extensionless. `.dockerignore` strips `*.md`, so a `LICENSE.md` would be missing from
 a locally built image — and the image is a distribution, so the notice has to travel with it.

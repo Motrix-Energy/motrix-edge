@@ -404,7 +404,24 @@ This is the commit that creates an obligation. Everything in it is prose, `.giti
   imposition. The only real gap is a plugin with its own pip dependency — see triggered option 1.
 - **Discovery, free**: a GitHub topic `motrix-edge-plugin`, the repo naming convention, one sentence
   in `README.md`. No index, no table, no tiers.
-- **One template repository**: the skeleton, an extensionless `LICENSE`, and a CI workflow copying this
+- ~~**One template repository**~~ — **built, then deliberately deleted.** It existed for an afternoon
+  and did not survive the first question asked of it: this repository already ships 25 worked plugins
+  that the suite keeps green against a moving runtime, the recipes already route an author to the one
+  whose shape matches, and a template repository has no CI against `main` — so it rots into teaching a
+  layout that no longer loads. It was also an *untriggered* option shipped because this bullet listed
+  it, which is the mistake the triggered-options table exists to prevent.
+
+  What it uniquely carried was the out-of-tree scaffolding, which no in-tree plugin can demonstrate
+  because none of them needs it. That was salvaged rather than lost: the `conftest.py` and the CI job
+  are written out on the docs site's publishing page, and `tests/test_published_plugin.py` is the
+  executable proof — it builds a vendor package in a temp directory and drives the real loader through
+  it on three axes, in the repository that is already maintained. Writing it surfaced a trap the
+  template had shipped undocumented: extending a package's `__path__` merges *imports* but not
+  *resources*, so `files()` never sees an out-of-tree schema — the same flaw §9 rejects
+  `pkgutil.extend_path` for.
+
+  Revisit when two authors have hit the same scaffolding problem. Original plan: the skeleton, an
+  extensionless `LICENSE`, and a CI workflow copying this
   repo's security posture verbatim (`permissions: contents: read`, SHA-pinned actions,
   `persist-credentials: false`).
 - `.github/ISSUE_TEMPLATE/config.yml` — a contact link routing community-plugin problems off this
